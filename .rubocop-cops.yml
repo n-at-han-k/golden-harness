@@ -1,0 +1,42 @@
+# Project cops.
+#
+# These run at the END of the pipeline, on Ruby that already parses. That is the
+# dividing line for what can be a cop at all: a `Transpile/HoistStructConstant`
+# cop was tried and abandoned because `dynamic constant assignment` is a
+# Lint/Syntax error -- rubocop builds no AST for such a file, so no cop runs on
+# it. That fix had to move into transform.yml, which hoists the struct while the
+# C++ tree is still available. Layout of valid Ruby, by contrast, is exactly
+# what a cop is for.
+require:
+  - ./cops/multiline_struct_new.rb
+  - ./cops/multiline_condition.rb
+  - ./cops/blank_line_between_statements.rb
+  - ./cops/single_line_arguments.rb
+
+Transpile/MultilineStructNew:
+  Enabled: true
+  Description: Lay out Struct.new with one member per line, as the golden does.
+
+Transpile/MultilineCondition:
+  Enabled: true
+  Description: >-
+    Wrap a long boolean condition in parentheses, one operand per line. The
+    built-in Layout cops re-indent existing breaks but never introduce them, so
+    a long transliterated condition would otherwise stay on one line.
+
+Transpile/BlankLineBetweenStatements:
+  Enabled: true
+  Description: >-
+    Separate a multi-line statement from the next with a blank line. Confirmed
+    against `rubocop --show-cops` that no built-in covers this: the
+    EmptyLinesAround*Body family handles the inside of a body,
+    EmptyLineAfterMultilineCondition the condition/body gap, and
+    EmptyLineAfterGuardClause only guard clauses.
+
+Transpile/SingleLineArguments:
+  Enabled: true
+  Description: >-
+    Join a wrapped argument list onto one line. The break is an artefact of the
+    C++ source. No built-in does this: Layout/LineLength is the only cop that
+    moves code between lines and it only splits, and it is disabled here
+    because it would wrap transliterated expressions arbitrarily.

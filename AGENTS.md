@@ -1,0 +1,3 @@
+# Line spacing
+
+* All line spacing is handled by rubocop...

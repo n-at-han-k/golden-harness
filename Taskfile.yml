@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+#
+# The C++ -> Ruby pipeline. Each stage rewrites tmp/ in place.
+#
+#   task                           the trimmed discovery.cpp
+#   task SRC=discovery.cpp.full    the whole 1320-line file
+
+version: '3'
+
+vars:
+  SRC: discovery.cpp
+
+tasks:
+  default:
+    desc: Run the pipeline and diff the result against the golden
+    cmds:
+      - rm -rf tmp && mkdir -p tmp/libsync && cp {{.SRC}} tmp/libsync/discovery.cpp
+      - python3 scripts/build_transform.py
+      - python3 scripts/prepare.py tmp tmp
+      - ast-grep scan -c sgconfig.yml -r scripts/rules/00-alias.yml --update-all tmp
+      # To a fixpoint: an outer match consumes its inner one, so one round does
+      # not reach a nested construct.
+      - for i in 1 2 3 4 5; do ast-grep scan -c sgconfig.yml -r scripts/rules/simplify.yml --update-all tmp; done
+      - ast-grep scan -c sgconfig.yml -r scripts/transform.yml --update-all tmp
+      - python3 scripts/rubyify.py tmp tmp
+      # Non-zero whenever offences remain after autocorrect, which is expected
+      # on generated code. The log keeps what it did and what it could not do.
+      - bundle exec rubocop -A -c .rubocop.yml tmp >tmp/rubocop.log || true
+      - python3 scripts/compare.py --generated tmp/libsync/discovery.cpp.rb

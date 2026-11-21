@@ -1,0 +1,10 @@
+# ast-grep project config for the golden harness. Self-contained: this
+# directory reaches into nothing outside itself.
+ruleDirs:
+  - scripts/rules
+languageGlobs:
+  # ast-grep's registry gives ".h" to C, not Cpp
+  # (crates/language/src/registry.rs: C { extensions: ["c", "h"] }).
+  # Without this a `language: cpp` rule skips every header.
+  cpp:
+    - "**/*.h"

@@ -1,0 +1,160 @@
+# Formatter-only configuration.
+#
+# The transliteration pipeline emits Ruby from ast-grep fix templates, which are
+# text and carry no indentation sense. Rather than reconstruct layout in the
+# generator, `rubocop -A` normalises it at the end -- and the golden comparison
+# runs the SAME pass over golden-harness/discovery.cpp.rb, so the two sides are
+# laid out identically and the diff shows substance only.
+#
+# Only Layout cops run. Everything else is disabled on purpose: this is
+# machine-generated transliteration of C++, so Metrics, Naming and Style
+# complaints are noise, and a Style autocorrect could change meaning.
+inherit_from:
+  - .rubocop-cops.yml
+
+AllCops:
+  # Without this rubocop warns "Using Ruby 2.7 parser" and applies rules for a
+  # Ruby far older than the one in the devshell.
+  TargetRubyVersion: 3.4
+  NewCops: disable
+  DisabledByDefault: true
+  SuggestExtensions: false
+  Exclude:
+    - 'refs/**/*'
+    - 'src/**/*'
+
+Layout:
+  Enabled: true
+
+# The generator emits one statement per line already; leave long lines alone
+# rather than have rubocop wrap transliterated C++ expressions.
+Layout/LineLength:
+  Enabled: false
+
+# Trailing/leading blank lines come from stripped #includes and deleted
+# conditional blocks, and tidying them is exactly what is wanted.
+Layout/EmptyLines:
+  Enabled: true
+Layout/TrailingEmptyLines:
+  Enabled: true
+
+# Not formatting: this inserts a magic comment that changes string semantics,
+# and it shifts every line so the golden diff reports a whole-file mismatch.
+Style/FrozenStringLiteralComment:
+  Enabled: false
+Layout/EmptyLineAfterMagicComment:
+  Enabled: false
+
+# Generated blocks arrive with blank lines where braces and access specifiers
+# were removed; collapsing them is exactly what is wanted for the golden diff.
+Layout/EmptyLinesAroundMethodBody:
+  Enabled: true
+Layout/EmptyLinesAroundClassBody:
+  Enabled: true
+Layout/EmptyLinesAroundModuleBody:
+  Enabled: true
+Layout/EmptyLinesAroundBlockBody:
+  Enabled: true
+Layout/EmptyLineBetweenDefs:
+  Enabled: true
+
+# Alignment and indentation. Under `DisabledByDefault: true` a bare
+# `Layout: Enabled: true` is not enough -- each cop has to be named, which is
+# why generated code kept arriving with 4-space continuations and misaligned
+# closing parens.
+Layout/IndentationWidth:
+  Enabled: true
+  Width: 2
+Layout/IndentationConsistency:
+  Enabled: true
+Layout/ArgumentAlignment:
+  Enabled: true
+  EnforcedStyle: with_fixed_indentation
+Layout/ParameterAlignment:
+  Enabled: true
+  EnforcedStyle: with_fixed_indentation
+Layout/FirstArgumentIndentation:
+  Enabled: true
+  EnforcedStyle: consistent
+Layout/FirstArrayElementIndentation:
+  Enabled: true
+  EnforcedStyle: consistent
+Layout/FirstHashElementIndentation:
+  Enabled: true
+  EnforcedStyle: consistent
+Layout/ClosingParenthesisIndentation:
+  Enabled: true
+Layout/MultilineMethodCallBraceLayout:
+  Enabled: true
+Layout/MultilineMethodCallIndentation:
+  Enabled: true
+  EnforcedStyle: indented
+Layout/MultilineOperationIndentation:
+  Enabled: true
+  EnforcedStyle: indented
+Layout/ElseAlignment:
+  Enabled: true
+Layout/EndAlignment:
+  Enabled: true
+  EnforcedStyleAlignWith: variable
+Layout/BlockAlignment:
+  Enabled: true
+Layout/BlockEndNewline:
+  Enabled: true
+Layout/DefEndAlignment:
+  Enabled: true
+Layout/CaseIndentation:
+  Enabled: true
+Layout/CommentIndentation:
+  Enabled: true
+Layout/ExtraSpacing:
+  Enabled: true
+Layout/LeadingEmptyLines:
+  Enabled: true
+Layout/SpaceAroundOperators:
+  Enabled: true
+Layout/SpaceInsideParens:
+  Enabled: true
+Layout/SpaceAfterComma:
+  Enabled: true
+Layout/TrailingWhitespace:
+  Enabled: true
+Layout/EmptyLinesAroundAccessModifier:
+  Enabled: true
+
+# The generator emits operators at the START of a continuation line
+# (`&& (...)`), which is where the C++ had them. Ruby needs the operator on the
+# PRECEDING line or the continuation parses as a new statement.
+Layout/LineEndStringConcatenationIndentation:
+  Enabled: true
+
+# Empty-line cops. Each has to be named individually under
+# `DisabledByDefault: true` -- `Layout: Enabled: true` does not reach them.
+#
+# EmptyLineAfterMultilineCondition is OFF. It puts a blank line between a
+# wrapped `if (...)` and its body; the golden runs the body straight on from
+# the closing paren:
+#
+#     if (
+#       !@discovery_data.should_discover_locally(@current_folder.local) &&
+#       ...
+#     )
+#       @query_local = :parent_not_changed
+#     end
+Layout/EmptyLineAfterMultilineCondition:
+  Enabled: false
+Layout/EmptyLineAfterGuardClause:
+  Enabled: true
+Layout/EmptyLinesAroundArguments:
+  Enabled: true
+Layout/EmptyLinesAroundBeginBody:
+  Enabled: true
+Layout/EmptyLinesAroundExceptionHandlingKeywords:
+  Enabled: true
+Layout/EmptyLinesAfterModuleInclusion:
+  Enabled: true
+Layout/EmptyLinesAroundAttributeAccessor:
+  Enabled: true
+Layout/EmptyComment:
+  Enabled: true
+

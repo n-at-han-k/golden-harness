@@ -1,0 +1,399 @@
+# C++ -> C++ lowering, run before transform.yml.
+#
+# Self-contained to this directory. Each rule removes something that has no Ruby
+# counterpart, while leaving the file parseable by tree-sitter -- it does NOT
+# need to compile, which is what lets these compose.
+#
+# Ordering matters in one place: the conversion-operator rule must see the
+# declarator before the indirection rule strips the reference off it.
+
+# ---- types and qualifiers -------------------------------------------------
+id: s-type-qualifier
+language: cpp
+severity: hint
+rule:
+  kind: type_qualifier
+  regex: '^(const|volatile|mutable|constexpr|consteval|constinit)$'
+fix: ""
+---
+id: s-explicit
+language: cpp
+severity: hint
+rule: { kind: explicit_function_specifier }
+fix: ""
+---
+id: s-virtual-specifier
+language: cpp
+severity: hint
+rule: { kind: virtual_specifier }
+fix: ""
+---
+id: s-noexcept
+language: cpp
+severity: hint
+rule: { kind: noexcept }
+fix: ""
+---
+id: s-trailing-return
+language: cpp
+severity: hint
+rule: { kind: trailing_return_type }
+fix: ""
+---
+# `= default;` and `= delete;` INCLUDE their trailing semicolon, and the parent
+# function_definition carries no other terminator -- replacing them with nothing
+# leaves a dangling `A()` and breaks the parse.
+id: s-default-method
+language: cpp
+severity: hint
+rule: { kind: default_method_clause }
+fix: ";"
+---
+id: s-delete-method
+language: cpp
+severity: hint
+rule: { kind: delete_method_clause }
+fix: ";"
+---
+id: s-pure-virtual
+language: cpp
+severity: hint
+rule: { kind: pure_virtual_clause }
+fix: ";"
+---
+# ---- indirection ----------------------------------------------------------
+# Every Ruby object is a reference and there is no way to say "pointer to", so
+# T*, T& and T all collapse to the same thing.
+id: s-pointer-declarator
+language: cpp
+severity: hint
+rule:
+  kind: pointer_declarator
+  has: { field: declarator, pattern: $D }
+fix: "$D"
+---
+id: s-reference-declarator
+language: cpp
+severity: hint
+rule:
+  kind: reference_declarator
+  has: { pattern: $D }
+fix: "$D"
+---
+# Lift any nested declarator first: `operator const path &() const` keeps its
+# parameter list INSIDE the reference declarator, and a blank fix deleted the
+# `()` with it.
+id: s-abstract-pointer-nested
+language: cpp
+severity: hint
+rule:
+  kind: abstract_pointer_declarator
+  has: { field: declarator, pattern: $D }
+fix: "$D"
+---
+id: s-abstract-reference-nested
+language: cpp
+severity: hint
+rule:
+  kind: abstract_reference_declarator
+  has: { pattern: $D }
+fix: "$D"
+---
+id: s-abstract-pointer
+language: cpp
+severity: hint
+rule:
+  kind: abstract_pointer_declarator
+  not: { has: { pattern: $ANY } }
+fix: ""
+---
+id: s-abstract-reference
+language: cpp
+severity: hint
+rule:
+  kind: abstract_reference_declarator
+  not: { has: { pattern: $ANY } }
+fix: ""
+---
+# ---- templates ------------------------------------------------------------
+# Ruby generics are implicit, so a template is just its inner declaration. The
+# class case needs its `;` added back: a class_specifier does not include the
+# trailing semicolon -- it is a SIBLING -- so lifting a class out of its
+# template header silently drops it.
+id: s-template-class
+language: cpp
+severity: hint
+rule:
+  kind: template_declaration
+  has:
+    any:
+      - kind: class_specifier
+      - kind: struct_specifier
+      - kind: union_specifier
+    pattern: $INNER
+fix: "$INNER;"
+---
+id: s-template-function
+language: cpp
+severity: hint
+rule:
+  kind: template_declaration
+  has: { kind: function_definition, pattern: $INNER }
+fix: "$INNER"
+---
+id: s-template-other
+language: cpp
+severity: hint
+rule:
+  kind: template_declaration
+  has:
+    pattern: $INNER
+    not: { kind: template_parameter_list }
+fix: "$INNER"
+---
+# ---- things with no Ruby meaning -----------------------------------------
+id: s-friend
+language: cpp
+severity: hint
+rule: { kind: friend_declaration }
+fix: ""
+---
+id: s-static-assert
+language: cpp
+severity: hint
+rule: { kind: static_assert_declaration }
+fix: ""
+---
+id: s-decltype
+language: cpp
+severity: hint
+rule: { kind: decltype }
+fix: "auto"
+---
+# `std::move(x)` is a C++ lifetime concern; Ruby has none.
+id: s-std-move
+language: cpp
+severity: hint
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: qualified_identifier
+        regex: '^std::(move|forward)$'
+    - has: { field: arguments, kind: argument_list, pattern: $MA }
+transform:
+  INNER:
+    replace: { source: $MA, replace: '^\(|\)$', by: '' }
+fix: "$INNER"
+---
+# ---- literals -------------------------------------------------------------
+# Qt string suffixes: _s (QString), _L1 (QLatin1String), _ba (QByteArray).
+# All three convert a literal to a Qt string type whose Ruby counterpart is
+# just String, so the suffix carries nothing. Char literals too -- `'/'_L1`.
+id: s-string-literal-suffix
+language: cpp
+severity: hint
+rule:
+  kind: user_defined_literal
+  all:
+    - has:
+        any:
+          - kind: string_literal
+          - kind: char_literal
+          - kind: raw_string_literal
+        pattern: $STR
+    - has: { kind: literal_suffix, regex: '^_(s|L1|ba|qs)$' }
+fix: "$STR"
+---
+# std::chrono durations normalise to seconds; Ruby has no duration type.
+id: s-chrono-hours
+language: cpp
+severity: hint
+rule:
+  kind: user_defined_literal
+  all:
+    - has: { kind: number_literal, pattern: $N }
+    - has: { kind: literal_suffix, regex: '^h$' }
+fix: "($N * 3600)"
+---
+id: s-chrono-minutes
+language: cpp
+severity: hint
+rule:
+  kind: user_defined_literal
+  all:
+    - has: { kind: number_literal, pattern: $N }
+    - has: { kind: literal_suffix, regex: '^min$' }
+fix: "($N * 60)"
+---
+id: s-chrono-seconds
+language: cpp
+severity: hint
+rule:
+  kind: user_defined_literal
+  all:
+    - has: { kind: number_literal, pattern: $N }
+    - has: { kind: literal_suffix, regex: '^(s|ms)$' }
+fix: "$N"
+---
+# ---- ternary --------------------------------------------------------------
+# Ruby's ternary is identical, but `cond ?a:b` is a syntax error there (`:b`
+# lexes as a symbol), so spacing is normalised. The `not inside
+# parenthesized_expression` guard is what makes this terminate: without it the
+# fix re-matches its own output and each round adds another paren layer.
+id: s-ternary
+language: cpp
+severity: hint
+rule:
+  kind: conditional_expression
+  not:
+    inside: { kind: parenthesized_expression }
+  all:
+    - has: { field: condition, pattern: $TC }
+    - has: { field: consequence, pattern: $TT }
+    - has: { field: alternative, pattern: $TE }
+fix: "($TC ? $TT : $TE)"
+---
+# NOTE: the OC_ASSERT rule used to live here. Its fix is
+# `unless cond / raise / end` -- which is RUBY, and this file is a
+# C++ -> C++ stage, so emitting it here stopped transform.yml from parsing
+# the file at all. (An earlier `fix: "raise"` survived only because `raise`
+# happens to be a valid C++ identifier.) It is a rewriter in transform.yml
+# now, which is where Ruby is emitted.
+---
+# `OC_ENSURE(cond)` is a checked predicate that RETURNS the condition, unlike
+# OC_ASSERT which aborts, so it reduces to the condition itself.
+id: s-oc-ensure
+language: cpp
+severity: hint
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: identifier
+        regex: '^(OC_ENSURE|OC_ENSURE_NOT)$'
+    - has: { field: arguments, kind: argument_list, pattern: $EA }
+transform:
+  INNER:
+    replace: { source: $EA, replace: '^\(|\)$', by: '' }
+fix: "$INNER"
+---
+# NOTE: the struct -> Struct.new and std::map -> Hash.new idioms used to live
+# here. They emit RUBY, which stops the file parsing as C++ and made
+# transform.yml fall through to its CXX_UNMAPPED catch-all. They are rewriters
+# in transform.yml now, where they belong.
+---
+# Qt literal wrappers: `QLatin1Char('.')`, `QStringLiteral("x")`,
+# `QByteArrayLiteral("x")`, `QLatin1String("x")`. Each wraps a literal in a Qt
+# type whose Ruby counterpart is just String, so the wrapper carries nothing.
+#
+# The char case must also change quoting: C++ writes a char as `'.'`, and Ruby
+# has no char type -- the golden has `f.first[0] == "."`, double quoted.
+id: s-qt-char-wrapper
+language: cpp
+severity: hint
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: identifier
+        regex: '^(QLatin1Char|QChar)$'
+    - has:
+        field: arguments
+        kind: argument_list
+        has:
+          kind: char_literal
+          has: { kind: character, pattern: $CH }
+fix: '"$CH"'
+---
+id: s-qt-string-wrapper
+language: cpp
+severity: hint
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: identifier
+        regex: '^(QStringLiteral|QByteArrayLiteral|QLatin1String|QLatin1StringView|QString::fromUtf8|tr)$'
+    - has:
+        field: arguments
+        kind: argument_list
+        has: { kind: string_literal, pattern: $QSTR }
+fix: "$QSTR"
+---
+# Delete every comment except the licence header.
+#
+# The golden carries the file's licence block and nothing else -- zero comment
+# lines below it. Deleting a comment leaves valid C++, which is why this is a
+# simplify-stage rule: converting `//` to `#` would NOT be, because `#` at line
+# start is a preprocessor directive and the file would stop parsing.
+#
+# A comment anywhere inside a body goes. The licence is the only comment at
+# translation_unit scope that is a /* */ block, so file-scope line comments go
+# too.
+id: s-drop-body-comment
+language: cpp
+severity: hint
+rule:
+  kind: comment
+  inside:
+    stopBy: end
+    any:
+      - kind: compound_statement
+      - kind: declaration_list
+      - kind: field_declaration_list
+      - kind: function_definition
+      - kind: argument_list
+      - kind: parameter_list
+      - kind: initializer_list
+fix: ""
+---
+id: s-drop-file-line-comment
+language: cpp
+severity: hint
+rule:
+  kind: comment
+  inside: { kind: translation_unit }
+  regex: '^//'
+fix: ""
+---
+# `else if (c) { ... }` -> `else { if (c) { ... } }`
+#
+# An `else if` arrives as an if_statement sitting DIRECTLY under the
+# else_clause rather than as a compound_statement, which is why the emitter's
+# s-if-else rewriter -- `has: { field: alternative, kind: else_clause, has:
+# { kind: compound_statement } }` -- misses it. 23 chains in discovery.cpp came
+# out with their braces intact, and that alone made the whole file unparseable
+# as Ruby.
+#
+# Normalising here, as pure C++ -> C++, means the emitter needs nothing new:
+# s-if-else already handles a compound_statement alternative and s-block
+# unwraps the braces. `rubocop -A` then collapses
+#
+#     else
+#       if c
+#         ...
+#       end
+#     end
+#
+# to `elsif c` via Style/IfInsideElse.
+#
+# The alternative was a chain-aware rewriter in transform.yml, which needs one
+# rewriter TIER per link of the chain -- it pushed DEPTH from 7 to 14 and still
+# ran out on this file.
+#
+# Terminates: the rewritten if is inside a compound_statement, so it no longer
+# matches `inside: { kind: else_clause }`. A chain of N links needs N rounds of
+# the simplify fixpoint, and the longest here is 4.
+id: s-brace-else-if
+language: cpp
+severity: hint
+rule:
+  kind: if_statement
+  pattern: $NESTED
+  inside: { kind: else_clause }
+fix: "{ $NESTED }"
