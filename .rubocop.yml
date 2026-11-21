@@ -158,3 +158,22 @@ Layout/EmptyLinesAroundAttributeAccessor:
 Layout/EmptyComment:
   Enabled: true
 
+
+# The one Style cop that runs, and the design depends on it.
+#
+# `scripts/rules/simplify.yml`'s s-brace-else-if normalises an `else if` chain
+# to `else { if ... }` -- pure C++, so every later rule keeps working, and the
+# emitter then needs no chain-aware rewriter (which would cost one rewriter
+# tier per link of the chain). That lands as
+#
+#     else
+#       if c
+#         ...
+#       end
+#     end
+#
+# and Style/IfInsideElse collapses it to `elsif c`, which is what Ruby and the
+# golden spell. Flattening is a styling question, so it belongs here rather
+# than in the rules.
+Style/IfInsideElse:
+  Enabled: true

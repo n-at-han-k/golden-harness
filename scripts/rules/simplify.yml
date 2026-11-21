@@ -397,3 +397,203 @@ rule:
   pattern: $NESTED
   inside: { kind: else_clause }
 fix: "{ $NESTED }"
+---
+# Drop the `break` that ends a switch case.
+#
+# Ruby's `when` does not fall through, so the C++ `break` has no counterpart --
+# and `break` outside a loop is a hard Ruby syntax error, so leaving it in
+# stops the file parsing. Only the LAST statement of the case is dropped, which
+# `nthChild: { position: 1, reverse: true }` states exactly; a `break` anywhere
+# else belongs to a loop inside the case and stays.
+#
+# Both parents are listed because the case body may or may not be braced at
+# this point -- this rule runs before s-brace-case.
+id: s-drop-case-break
+language: cpp
+severity: hint
+rule:
+  kind: break_statement
+  nthChild: { position: 1, reverse: true }
+  inside:
+    any:
+      - { kind: case_statement }
+      - { kind: compound_statement, inside: { kind: case_statement } }
+fix: ""
+---
+# `case X: a(); b();` -> `case X: { a(); b(); }`
+#
+# A case label's statements are DIRECT CHILDREN of the case_statement, with no
+# compound_statement wrapping them. Bracing them here means the emitter can
+# rebuild the node from its `value` and body fields and never has to find the
+# end of the `case ...:` label in text -- an earlier version stripped the label
+# with a greedy regex and ate the first statement when it contained a ternary
+# (`case CSYNC_INSTRUCTION_NEW:` followed by `x = a ? b : c`).
+#
+# `context`/`selector` is what makes the statement list capturable: `$$$BODY`
+# needs the label in front of it to parse, so the pattern is written as a whole
+# switch and `selector` pulls out the case_statement.
+id: s-brace-case
+language: cpp
+severity: hint
+rule:
+  pattern:
+    context: "switch (_) { case $V: $$$BODY }"
+    selector: case_statement
+  not: { has: { kind: compound_statement } }
+fix: "case $V: { $$$BODY }"
+---
+# The same for `default:`, which has no `value` field.
+id: s-brace-default
+language: cpp
+severity: hint
+rule:
+  pattern:
+    context: "switch (_) { default: $$$BODY }"
+    selector: case_statement
+  not: { has: { kind: compound_statement } }
+fix: "default: { $$$BODY }"
+---
+# An empty fall-through label: `case A:` immediately followed by `case B:`,
+# which in C++ means A shares B's body.
+#
+# The golden spells each as its own `when` with an empty body, so the label
+# needs a body here for s-case to rebuild it. s-brace-case cannot do it --
+# its `$$$BODY` pattern needs at least the label and body to align -- so the
+# empty case is its own rule.
+#
+# `not: { has: { nthChild: 2 } }` is the test for "no statements": the `value`
+# is the case_statement's first named child, so a second one can only be a
+# statement.
+id: s-brace-case-empty
+language: cpp
+severity: hint
+rule:
+  kind: case_statement
+  has: { field: value, pattern: $V }
+  not: { has: { nthChild: 2 } }
+fix: "case $V: { }"
+---
+# `x++` -> `x += 1`, `x--` -> `x -= 1`.
+#
+# Both are valid C++, so this stays a C++ -> C++ normalisation and the file
+# keeps parsing. Ruby has no `++`, and `x++` there parses as `x + +...`, which
+# is a syntax error at end of line.
+#
+# Restricted to statement position. In value position (`*it++`, `a[i++]`) the
+# C++ result is the value BEFORE the update, which `x += 1` does not reproduce,
+# so those are deliberately left alone to be noticed rather than silently
+# changed. discovery.cpp has none.
+#
+# The operator is an anonymous token, so `regex` on the node text is what
+# separates increment from decrement.
+id: s-increment
+language: cpp
+severity: hint
+rule:
+  kind: update_expression
+  regex: '\+\+'
+  inside: { kind: expression_statement }
+  has: { field: argument, pattern: $UV }
+fix: "$UV += 1"
+---
+id: s-decrement
+language: cpp
+severity: hint
+rule:
+  kind: update_expression
+  regex: '\-\-'
+  inside: { kind: expression_statement }
+  has: { field: argument, pattern: $DV }
+fix: "$DV -= 1"
+---
+# A braceless body gets braces: `if (done) return;` -> `if (done) { return; }`.
+#
+# Every statement rewriter in transform.yml requires a compound_statement body
+# -- `has: { field: consequence, kind: compound_statement }` -- so a braceless
+# branch matched nothing and came through as raw C++. `if (done)` then passed
+# out as text while s-return rewrote the `return` under it, leaving a block
+# with no `end`.
+#
+# One C++ -> C++ rule, against seven statement kinds times twelve tiers.
+#
+# The slot is pinned with `field`, which `inside` accepts as a relational
+# option. That precision is the point: a `for_statement`'s INITIALISER is a
+# `declaration`, so a rule that only said `inside: { kind: for_statement }`
+# would brace `int i = 0` as well. An earlier version had to drop for_statement
+# entirely for exactly that reason.
+#
+# else_clause needs no field -- it holds only its body. if_statement is left
+# out of it: an `else if` is a bare if_statement there, and s-brace-else-if
+# owns that case.
+id: s-brace-body
+language: cpp
+severity: hint
+utils:
+  statement:
+    any:
+      - { kind: expression_statement }
+      - { kind: declaration }
+      - { kind: return_statement }
+      - { kind: continue_statement }
+      - { kind: break_statement }
+      - { kind: goto_statement }
+      - { kind: throw_statement }
+      - { kind: if_statement }
+      - { kind: while_statement }
+      - { kind: do_statement }
+      - { kind: for_range_loop }
+      - { kind: for_statement }
+      - { kind: switch_statement }
+rule:
+  matches: statement
+  pattern: $BS
+  any:
+    - inside: { kind: if_statement, field: consequence }
+    - inside: { kind: while_statement, field: body }
+    - inside: { kind: for_statement, field: body }
+    - inside: { kind: for_range_loop, field: body }
+fix: "{ $BS }"
+---
+# The same for a braceless `else`. if_statement is excluded so an `else if`
+# chain reaches s-brace-else-if instead.
+id: s-brace-else-body
+language: cpp
+severity: hint
+rule:
+  pattern: $BE
+  inside: { kind: else_clause }
+  any:
+    - { kind: expression_statement }
+    - { kind: declaration }
+    - { kind: return_statement }
+    - { kind: continue_statement }
+    - { kind: break_statement }
+    - { kind: goto_statement }
+    - { kind: throw_statement }
+    - { kind: while_statement }
+    - { kind: do_statement }
+    - { kind: for_range_loop }
+    - { kind: for_statement }
+    - { kind: switch_statement }
+fix: "{ $BE }"
+---
+# `std::as_const(x)` / `qAsConst(x)` -> `x`.
+#
+# Both exist only to pick a const overload and stop Qt containers detaching;
+# there is nothing in Ruby for them to become. Unwrapping here keeps it valid
+# C++, so the range-for around it still parses and s-foreach still matches.
+id: s-as-const
+language: cpp
+severity: hint
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        stopBy: end
+        regex: '^(std::as_const|as_const|qAsConst)$'
+    - has:
+        field: arguments
+        kind: argument_list
+        has: { pattern: $ACV }
+fix: "$ACV"

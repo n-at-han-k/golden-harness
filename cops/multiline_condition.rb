@@ -36,6 +36,7 @@ module RuboCop
 
         MSG = 'Wrap a long condition in parentheses, one operand per line.'
         MSG_BODY_GAP = 'Separate a long `if` line from its body with a blank line.'
+        MSG_REDUNDANT = 'Drop the parentheses around a single-line condition.'
 
         # Wrap a boolean condition past this width. Shorter ones read better
         # inline, and the golden keeps them that way.
@@ -47,11 +48,45 @@ module RuboCop
         def on_if(node)
           return if node.ternary? || node.modifier_form?
 
+          drop_redundant_parens(node)
           wrap_condition(node)
           gap_before_body(node)
         end
 
+        def on_while(node)
+          drop_redundant_parens(node)
+        end
+        alias on_until on_while
+
         private
+
+        # Rule 3: `if (a == b)` -> `if a == b`.
+        #
+        # The parens are an artefact of the C++ condition_clause. The golden is
+        # inconsistent about them by hand -- 41 single-line conditions keep them
+        # and 109 do not, with no pattern, because they are wherever the C++
+        # happened to put them -- so a cop settles it uniformly over BOTH sides
+        # rather than the rules guessing.
+        #
+        # Only a SINGLE-LINE condition. The wrapped multi-line form is rule 1's
+        # output and its parens are what make it parse:
+        #
+        #     if (
+        #       a &&
+        #       b
+        #     )
+        #
+        # which is also why the built-in Style/RedundantParentheses cannot be
+        # used here -- it unwraps that form and fights rule 1 forever.
+        def drop_redundant_parens(node)
+          condition = node.condition
+          return if condition.nil? || condition.multiline?
+          return unless condition.begin_type? && condition.children.one?
+
+          add_offense(condition, message: MSG_REDUNDANT) do |corrector|
+            corrector.replace(condition, condition.children.first.source)
+          end
+        end
 
         # Rule 1 applies: a single-line boolean condition long enough to wrap.
         def wrappable?(condition)

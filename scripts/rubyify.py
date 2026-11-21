@@ -84,57 +84,22 @@ def rename(name: str) -> str:
     return name if name in KEEP else snake(name)
 
 
-def fold_log_streams(text: str, categories: dict[str, str]) -> str:
-    """`qCInfo(lcDisco) << u"X" << a << b` -> `Log.info("sync.discovery") { "X #{a} #{b}" }`
+def apply_log_categories(text: str, categories: dict[str, str]) -> str:
+    """`Log.info(lcDisco)` -> `Log.info("sync.discovery")`.
 
-    A `<<` chain is a flat binary_expression, so folding it is a text job rather
-    than a tree one: each operand becomes either literal text (if it is a string
-    literal) or an interpolation. The category name is resolved from the
-    file's Q_LOGGING_CATEGORY declaration, which prepare.py preserved as a
-    [[q_logging_category("lcDisco, \"sync.discovery\", QtInfoMsg")]] attribute.
+    All that is left of the old fold_log_streams. The `<<` chain itself is now
+    folded by transform.yml's s-log rewriter, structurally, over the
+    binary_expression tree -- the text regex that used to do it was bounded to
+    one line and silently left a wrapped chain as raw C++.
+
+    What remains here is not a code transformation but a LOOKUP: the category
+    identifier is declared once per file by Q_LOGGING_CATEGORY, so resolving it
+    needs the whole file, and the value is a plain substitution.
     """
-    level = {"qCInfo": "info", "qCDebug": "debug", "qCWarning": "warn",
-             "qCCritical": "error", "qCFatal": "fatal",
-             "qInfo": "info", "qDebug": "debug", "qWarning": "warn"}
-
-    def fold(m: re.Match) -> str:
-        fn, cat, rest = m.group(1), m.group(2), m.group(3)
-        parts, buf, depth, quote = [], [], 0, None
-        for ch in rest:
-            if quote:
-                buf.append(ch)
-                if ch == quote and (len(buf) < 2 or buf[-2] != "\\"):
-                    quote = None
-                continue
-            if ch in "\"'":
-                quote = ch; buf.append(ch); continue
-            if ch in "([{":
-                depth += 1
-            elif ch in ")]}":
-                depth -= 1
-            buf.append(ch)
-        rest = "".join(buf)
-        chunks = []
-        for operand in re.split(r"<<(?![^(]*\))", rest):
-            operand = operand.strip().rstrip(";").strip()
-            if not operand:
-                continue
-            lit = re.match(r'^[uU]?"(.*)"$', operand, re.S)
-            if lit:
-                chunks.append(lit.group(1))
-            else:
-                chunks.append("#{" + operand + "}")
-        body = " ".join(chunks)
-        tag = categories.get(cat, cat)
-        return f'Log.{level.get(fn, "info")}("{tag}") {{ "{body}" }}'
-
-    names = "|".join(level)
-    # `;` OR end of line: transform.yml's s-expr rule has already removed the
-    # semicolon from any statement it emitted, and with re.S a `;`-only
-    # terminator scanned into the following lines and truncated the string.
-    # `.nospace()` and friends are tolerated between the call and the first <<.
-    return re.sub(rf"\b({names})\(\s*(\w+)\s*\)(?:\.\w+\(\))*\s*<<([^;\n]*)[;]?",
-                  fold, text, flags=re.M)
+    for ident, name in categories.items():
+        text = re.sub(r"(Log\.\w+)\(" + re.escape(ident) + r"\)",
+                      lambda m: f'{m.group(1)}("{name}")', text)
+    return text
 
 
 def log_categories(text: str) -> dict[str, str]:
@@ -164,7 +129,7 @@ def apply_naming(text: str) -> str:
 
     # Log streams first: the fold needs the original call and operand names,
     # before snake_casing rewrites them.
-    text = fold_log_streams(text, log_categories(text))
+    text = apply_log_categories(text, log_categories(text))
 
     # Drop the carrier declarations prepare.py left for the Qt macros.
     text = re.sub(r"^.*__qt_macro_\d+__\(\).*$\n?", "", text, flags=re.M)

@@ -179,7 +179,7 @@ module OCC
         when CSYNC_NOT_EXCLUDED
           nil
         when CSYNC_FILE_SILENTLY_EXCLUDED
-          Q_UNREACHABLE
+          raise
         when CSYNC_FILE_EXCLUDE_LIST
           item.error_string = "The file is listed on the ignore list."
           item.status = :excluded
@@ -380,7 +380,10 @@ module OCC
         return
       end
 
-      Q_ASSERT(!db_entry.is_valid)
+      unless !db_entry.is_valid
+        raise
+      end
+
       item.set_instruction(CSYNC_INSTRUCTION_NEW)
       item.direction = :down
       item.modtime = server_entry.modtime
@@ -407,7 +410,10 @@ module OCC
         return
       end
 
-      Q_ASSERT(!db_entry.is_valid && !local_entry.is_valid)
+      unless !db_entry.is_valid && !local_entry.is_valid
+        raise
+      end
+
       done = false
       async = false
 

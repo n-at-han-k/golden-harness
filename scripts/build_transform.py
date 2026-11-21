@@ -55,18 +55,28 @@ from __future__ import annotations
 import pathlib
 
 HERE = pathlib.Path(__file__).resolve().parent
-DEPTH = 7
+# Statement nesting depth. Measured on the simplified C++, not guessed: the
+# deepest statement in discovery.cpp sits 9 tiers inside its method body. It is
+# deeper than the source looks because three normalisations each add a level --
+# `else if` -> `else { if }`, `switch` -> case, and a braced case body -- so a
+# plain read of the C++ understates it. The cost of headroom is generated YAML
+# and nothing else; the cost of too little is statements silently left as C++
+# at the deepest tier, which is what capped handle_excluded at tier 7.
+DEPTH = 12
 
 # Order matters: the idiom rules come FIRST so they win over the generic
 # declaration and expression rules, which would otherwise match the same nodes.
+# s-log precedes s-expr: a `qCInfo(lcDisco) << ...` statement is also an
+# expression_statement, and the first matching rewriter in the list wins.
 STMT_LEAVES = ["s-struct", "s-map-decl", "s-assert", "s-decl", "s-decl-bare",
-               "s-expr", "s-return", "s-return-void", "s-next", "s-break"]
+               "s-log", "s-expr", "s-return", "s-return-void", "s-next",
+               "s-break"]
 # s-lambda-call is a BLOCK, not a leaf: it rewrites the lambda's body through
 # {nxt}, so it can only exist while a next tier does. It must also come FIRST,
 # ahead of s-expr -- a call with a trailing lambda is also an
 # expression_statement, and the first matching rewriter in the list wins.
 STMT_BLOCKS = ["s-if-else", "s-if", "s-while", "s-foreach",
-               "s-for", "s-switch", "s-block"]
+               "s-for", "s-switch", "s-case", "s-default", "s-block"]
 
 
 def stmt_ids(tier: int, leaves_only: bool) -> str:
@@ -82,8 +92,15 @@ def statement_tier(tier: int) -> str:
     inside = "inside: { kind: compound_statement }"
     # Expression-position rewriters. l-call only exists while a next tier does,
     # since it rewrites the lambda body through it.
-    expr_rw = (f"[l-iife-{tier}, l-call-brace-{tier}]"
-               if not last else f"[l-iife-{tier}]")
+    expr_rw = (f"[l-iife-{tier}, l-lambda-arg-{tier}, l-lambda0-arg-{tier}, "
+               f"l-lambda-{tier}, l-lambda0-{tier}, l-call-brace-{tier}, "
+               f"l-new-{tier}, l-new0-{tier}, l-brace-init-{tier}, "
+               f"l-addr-{tier}, l-lcall-{tier}, l-lbare-{tier}, "
+               f"l-enum-{tier}]"
+               if not last
+               else f"[l-iife-{tier}, l-new-{tier}, l-new0-{tier}, "
+                    f"l-brace-init-{tier}, l-addr-{tier}, l-lcall-{tier}, "
+                    f"l-lbare-{tier}, l-enum-{tier}]")
 
     out = f"""  # ---- statement tier {tier} ----------------------------------------------
   # `struct Entries {{ A a; B b; }};` -> `Entries = Struct.new(:a, :b, keyword_init: true)`
@@ -173,6 +190,137 @@ def statement_tier(tier: int) -> str:
       $MN = Hash.new do |hash, key|
       hash[key] = $VT.new
       end
+  # `new Foo(a, b)` -> `Foo.new(a, b)`.
+  #
+  # An emitter rewriter rather than a C++ -> C++ rule, because `Foo.new(a, b)`
+  # is not C++ and would stop the file parsing for every later rule. Kept in
+  # expr_rw at EVERY tier, including the last, since a `new` can appear in the
+  # deepest expression.
+  # `connect(job, &RequestEtagJob::finishedSignal, this, slot)`
+  # -> `connect(job, RequestEtagJob.finished_signal, this, slot)`
+  #
+  # Ruby allows `&` on the LAST argument only, where it means block-pass.
+  # Anywhere else the parse fails outright with "unexpected argument after a
+  # block argument", which is what two Qt `connect` calls in discovery.cpp did.
+  #
+  # So the `&` is dropped only when the argument is not last -- the golden
+  # keeps it where it IS last, as in
+  # `QTimer.single_shot(0, @discovery_data, &DiscoveryPhase.schedule_more_jobs)`,
+  # and `nthChild: {{ position: 1, reverse: true }}` is what tells the two apart.
+  #
+  # What a mid-list Qt signal reference SHOULD become is a convention decision,
+  # not a mechanical one; this rule only makes it parse.
+  # Invoking a lambda: `finalize(path, x)` -> `finalize.call(path, x)`.
+  #
+  # In Ruby a bare `finalize(...)` is a METHOD call, so the lambda is never
+  # reached -- rubocop reports the assignment as a useless one and the call
+  # raises NoMethodError. The golden spells it `.call`.
+  #
+  # Which names are lambdas is cross-statement knowledge, and the metavariable
+  # is what carries it: $LNAME appears both on the call's function and on an
+  # init_declarator inside the enclosing function_definition, and ast-grep
+  # unifies the two, so only a name actually bound to a lambda in this method
+  # is rewritten. An ordinary method call with the same shape is left alone.
+  - id: l-lcall{t}
+    rule:
+      kind: call_expression
+      all:
+        - has: {{ field: function, kind: identifier, pattern: $LNAME }}
+        - has: {{ field: arguments, kind: argument_list, pattern: $LCARGS }}
+        - inside:
+            stopBy: end
+            kind: function_definition
+            has:
+              stopBy: end
+              kind: init_declarator
+              all:
+                - has: {{ field: declarator, kind: identifier, pattern: $LNAME }}
+                - has: {{ field: value, kind: lambda_expression }}
+    fix: "$LNAME.call$LCARGS"
+  # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
+  # as a statement of its own, which in C++ is a no-op expression but in the
+  # source means the call. `not: inside init_declarator` keeps the rule off the
+  # lambda's own binding.
+  - id: l-lbare{t}
+    rule:
+      kind: identifier
+      pattern: $LBNAME
+      all:
+        - inside: {{ kind: expression_statement }}
+        - not: {{ inside: {{ kind: init_declarator }} }}
+        - inside:
+            stopBy: end
+            kind: function_definition
+            has:
+              stopBy: end
+              kind: init_declarator
+              all:
+                - has: {{ field: declarator, kind: identifier, pattern: $LBNAME }}
+                - has: {{ field: value, kind: lambda_expression }}
+    fix: "$LBNAME.call"
+  # A qualified enum constant becomes a bare symbol of its last segment:
+  # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
+  # `Qt::CaseInsensitive` -> `:case_insensitive`.
+  #
+  # Read off the golden, which keeps no `Class::Constant` at all, and applies
+  # it in every position -- assignment, comparison and argument alike
+  # (`.ends_with(".eml", :case_insensitive)`).
+  #
+  # `A::B::C` nests, with the final segment as the deepest `name`, so the
+  # search is `field: name` with `stopBy: end`.
+  #
+  # The PascalCase test on that segment is what keeps this off everything else:
+  # `std::filesystem::directory_entry` ends lowercase and stays, and so do
+  # qualified METHOD calls -- `QTimer::singleShot`, `Utility::fsCasePreserving`
+  # -- which begin lowercase and are handled as `::` -> `.` instead.
+  - id: l-enum{t}
+    rule:
+      kind: qualified_identifier
+      has:
+        field: name
+        stopBy: end
+        kind: identifier
+        pattern: $ENAME
+        regex: '^[A-Z][A-Za-z0-9]*$'
+    transform:
+      ESYM:
+        convert: {{ source: $ENAME, toCase: snakeCase }}
+    fix: ":$ESYM"
+  - id: l-addr{t}
+    rule:
+      kind: pointer_expression
+      regex: '^&'
+      inside: {{ kind: argument_list }}
+      not: {{ nthChild: {{ position: 1, reverse: true }} }}
+      has: {{ field: argument, pattern: $AV }}
+    fix: "$AV"
+  - id: l-new{t}
+    rule:
+      kind: new_expression
+      all:
+        - has: {{ field: type, pattern: $NT }}
+        - has: {{ field: arguments, kind: argument_list, pattern: $NA }}
+    fix: "$NT.new$NA"
+  # `new Foo` with no argument list.
+  - id: l-new0{t}
+    rule:
+      kind: new_expression
+      has: {{ field: type, pattern: $NT0 }}
+      not: {{ has: {{ field: arguments, kind: argument_list }} }}
+    fix: "$NT0.new"
+  # `Foo{{a, b}}` -- C++ brace initialisation -- -> `Foo.new(a, b)`.
+  # The braces belong to the initializer_list node, so they are stripped from
+  # the captured text rather than matched away.
+  - id: l-brace-init{t}
+    rule:
+      kind: compound_literal_expression
+      all:
+        - has: {{ field: type, pattern: $BT }}
+        - has: {{ field: value, kind: initializer_list, pattern: $BV }}
+    transform:
+      BARGS:
+        replace: {{ source: $BV, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: "$BT.new($BARGS)"
   - id: l-iife{t}
     rule:
       kind: call_expression
@@ -238,17 +386,89 @@ def statement_tier(tier: int) -> str:
         - has: {{ field: declarator, kind: identifier, pattern: $DNB }}
         - not: {{ has: {{ field: declarator, kind: init_declarator }} }}
     fix: "$DNB = nil"
+  # `qCInfo(lcDisco) << u"X" << a << b` -> `Log.info(lcDisco) {{ "X #{{a}} #{{b}}" }}`
+  #
+  # The chain is a left-nested binary_expression, so it is folded with a
+  # rewriter over its operands and `joinBy` -- which is the one place joinBy IS
+  # wanted, because what it discards is the `<<` tokens.
+  #
+  # Each operand becomes either literal text (a string_literal, with its quotes
+  # and any `u` prefix stripped) or an interpolation. The `qCInfo(lcDisco)` head
+  # rewrites to nothing, and g-head is listed FIRST so it claims that call
+  # before g-val can wrap it in `#{{}}`.
+  #
+  # This replaced a Python regex that scanned for `<<` in text. The regex was
+  # newline-bounded, so it folded only the first line of a wrapped chain and
+  # left the other ten as raw C++ -- which by itself stopped the file parsing
+  # as Ruby. The tree has no such problem: a chain is one node however it is
+  # laid out.
+  #
+  # The level comes from the function name by sequential `replace`s rather than
+  # a lookup table: Warning -> warn and Critical -> error are named explicitly,
+  # then the `qC` prefix is dropped and the rest lowercased.
+  - id: s-log{t}
+    rule:
+      kind: expression_statement
+      {inside}
+      has:
+        kind: binary_expression
+        pattern: $CHAIN
+        has:
+          stopBy: end
+          kind: call_expression
+          all:
+            - has:
+                field: function
+                stopBy: end
+                kind: identifier
+                pattern: $LFNAME
+                regex: '^qC(Info|Debug|Warning|Critical|Fatal)$'
+            - has:
+                field: arguments
+                kind: argument_list
+                has: {{ kind: identifier, pattern: $LCAT }}
+    transform:
+      LRAW:
+        rewrite:
+          rewriters: [g-head, g-lit, g-val]
+          source: $CHAIN
+          joinBy: " "
+      # The removed head leaves a leading separator space.
+      LPARTS:
+        replace: {{ source: $LRAW, replace: '^\\s+', by: '' }}
+      LL1:
+        replace: {{ source: $LFNAME, replace: '^qCWarning$', by: 'warn' }}
+      LL2:
+        replace: {{ source: $LL1, replace: '^qCCritical$', by: 'error' }}
+      LL3:
+        replace: {{ source: $LL2, replace: '^qC', by: '' }}
+      LLVL:
+        convert: {{ source: $LL3, toCase: lowerCase }}
+    fix: 'Log.$LLVL($LCAT) {{ "$LPARTS" }}'
   - id: s-expr{t}
     rule:
       kind: expression_statement
       {inside}
-      has: {{ pattern: $EX }}
+      has: {{ pattern: $EXR }}
+    transform:
+      # The expression is rewritten, not emitted verbatim. Without this a
+      # `connect(job, &C::sig, this, [captures](args) {{ ... }})` statement came
+      # through with its lambda intact -- 8 of them in discovery.cpp, and their
+      # bodies account for the last of the leftover C++ braces.
+      EX:
+        rewrite: {{ rewriters: {expr_rw}, source: $EXR }}
     fix: "$EX"
   - id: s-return{t}
     rule:
       kind: return_statement
       {inside}
-      has: {{ stopBy: end, pattern: $RV }}
+      has: {{ stopBy: end, pattern: $RVR }}
+    transform:
+      # Rewritten, not emitted verbatim -- same reason as s-expr. A
+      # `return MovePermissionResult{{a, b, c}}` kept its C++ brace
+      # initialisation otherwise.
+      RV:
+        rewrite: {{ rewriters: {expr_rw}, source: $RVR }}
     fix: "return $RV"
   - id: s-return-void{t}
     rule:
@@ -285,12 +505,155 @@ def statement_tier(tier: int) -> str:
   # Matches the call_expression itself, NOT an expression_statement, so it also
   # fires inside an `if` condition, which is where discovery.cpp's one lambda
   # lives.
+  # One argument of the call being rewritten.
+  #
+  # `not: inside lambda_expression` is load-bearing. LARGS uses joinBy, which
+  # collects EVERY match anywhere in the source, and the lambda being turned
+  # into a block contains calls of its own -- so their arguments were being
+  # joined into the outer call's argument list, which is how
+  # `connect(local_job, &X.finished_fatal_error, this, msg)` grew a stray `msg`
+  # taken from inside the block body.
   - id: l-arg{t}
     rule:
       inside: {{ kind: argument_list }}
       pattern: $LA
-      not: {{ kind: lambda_expression }}
+      not:
+        any:
+          - {{ kind: lambda_expression }}
+          - {{ inside: {{ kind: lambda_expression, stopBy: end }} }}
     fix: "$LA"
+  # `&Class::signal` in a non-final argument slot loses its `&`, for the reason
+  # given on l-addr. Listed before l-arg so it claims the node first.
+  - id: l-arg-addr{t}
+    rule:
+      kind: pointer_expression
+      regex: '^&'
+      inside: {{ kind: argument_list }}
+      not:
+        any:
+          - {{ inside: {{ kind: lambda_expression, stopBy: end }} }}
+          - {{ nthChild: {{ position: 1, reverse: true }} }}
+      has: {{ field: argument, pattern: $LAA }}
+    fix: "$LAA"
+  # A lambda BOUND TO A NAME: `auto f = [c](A a, B b) {{ ... }};`
+  # -> `f = lambda do |a, b| ... end`.
+  #
+  # Distinct from l-call/l-call-brace, which take a lambda passed as a call
+  # ARGUMENT, and from l-iife, which takes one immediately invoked. Without
+  # this, a bound lambda came through as C++ -- capture list, braces and all --
+  # and took the rest of its method with it, which is where 85 of the leftover
+  # brace lines in discovery.cpp came from.
+  #
+  # The block parameters come from the lambda's OWN declarator, so they are
+  # exactly what the C++ author wrote. A Qt `connect` slot lambda declares no
+  # parameters, and this correctly emits none: the slot's real arguments come
+  # from the SIGNAL's declaration in another header, which this file cannot
+  # see, so inventing a `|*_|` here would be a guess.
+  # A lambda in ARGUMENT position: `connect(a, &C::sig, this, [c](A a) {{ ... }})`
+  # -> `connect(a, &C.sig, this, lambda {{ |a| ... }})`.
+  #
+  # Braces, not do/end: `f(x, lambda do ... end)` binds the block to `f`, not
+  # to `lambda`, which is the same trap that made s-lambda-call use braces for
+  # a block inside an `if` condition.
+  #
+  # Listed before l-lambda so it wins for the same node -- rewriter list order
+  # decides, and only the first match applies.
+  - id: l-lambda-arg{t}
+    rule:
+      kind: lambda_expression
+      inside: {{ kind: argument_list }}
+      all:
+        - has:
+            field: declarator
+            kind: abstract_function_declarator
+            has:
+              field: parameters
+              kind: parameter_list
+              pattern: $LAP
+              has: {{ kind: parameter_declaration }}
+        - has: {{ field: body, kind: compound_statement, pattern: $LAB }}
+    transform:
+      LAARGS:
+        rewrite:
+          rewriters: [p-named, p-unnamed, p-variadic]
+          source: $LAP
+          joinBy: ", "
+      LARAW:
+        rewrite: {{ rewriters: {nxt}, source: $LAB }}
+      LABODY:
+        replace: {{ source: $LARAW, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      lambda {{ |$LAARGS|
+      $LABODY
+      }}
+  - id: l-lambda0-arg{t}
+    rule:
+      kind: lambda_expression
+      inside: {{ kind: argument_list }}
+      has: {{ field: body, kind: compound_statement, pattern: $LZAB }}
+      not:
+        has:
+          field: declarator
+          stopBy: end
+          kind: parameter_declaration
+    transform:
+      LZARAW:
+        rewrite: {{ rewriters: {nxt}, source: $LZAB }}
+      LZABODY:
+        replace: {{ source: $LZARAW, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      lambda {{
+      $LZABODY
+      }}
+  - id: l-lambda{t}
+    rule:
+      kind: lambda_expression
+      all:
+        - has:
+            field: declarator
+            kind: abstract_function_declarator
+            has:
+              field: parameters
+              kind: parameter_list
+              pattern: $LMP
+              has: {{ kind: parameter_declaration }}
+        - has: {{ field: body, kind: compound_statement, pattern: $LMB }}
+    transform:
+      LMARGS:
+        rewrite:
+          rewriters: [p-named, p-unnamed, p-variadic]
+          source: $LMP
+          joinBy: ", "
+      LMRAW:
+        rewrite: {{ rewriters: {nxt}, source: $LMB }}
+      LMBODY:
+        replace: {{ source: $LMRAW, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      lambda do |$LMARGS|
+      $LMBODY
+      end
+  # `[&] {{ ... }}` and `[&]() {{ ... }}` -- no parameters, so no block
+  # parameter list. The declarator is absent in the first form and present but
+  # empty in the second, which is why the test is for a parameter_declaration
+  # rather than for the declarator itself.
+  - id: l-lambda0{t}
+    rule:
+      kind: lambda_expression
+      has: {{ field: body, kind: compound_statement, pattern: $LZB }}
+      not:
+        has:
+          field: declarator
+          stopBy: end
+          kind: parameter_declaration
+    transform:
+      LZRAW:
+        rewrite: {{ rewriters: {nxt}, source: $LZB }}
+      LZBODY:
+        replace: {{ source: $LZRAW, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      lambda do
+      $LZBODY
+      end
   - id: l-call{t}
     rule:
       kind: call_expression
@@ -312,7 +675,7 @@ def statement_tier(tier: int) -> str:
     transform:
       LARGS:
         rewrite:
-          rewriters: [l-arg{t}]
+          rewriters: [l-arg-addr{t}, l-arg{t}]
           source: $LAL
           joinBy: ", "
       LBRAW:
@@ -348,7 +711,7 @@ def statement_tier(tier: int) -> str:
     transform:
       LARGS:
         rewrite:
-          rewriters: [l-arg{t}]
+          rewriters: [l-arg-addr{t}, l-arg{t}]
           source: $LAL
           joinBy: ", "
       LBRAW:
@@ -373,8 +736,17 @@ def statement_tier(tier: int) -> str:
     transform:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
-      IC:
+      IC_NL:
         rewrite: {{ rewriters: {expr_rw}, source: $ICR }}
+      # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
+      # keeps its newlines, and Ruby ends the statement at the last complete
+      # expression, so a line starting `&& ...` parses as a new statement and
+      # fails. Flattening the condition WHOLESALE was wrong: a condition can
+      # contain a `{{ |rec| ... }}` block whose newlines are its statement
+      # separators, and collapsing those put the block body on the `if` line.
+      # Transpile/MultilineCondition re-wraps the result afterwards.
+      IC:
+        replace: {{ source: $IC_NL, replace: '\\s*\\n\\s*(?<OP>&&|\\|\\|)', by: ' $OP' }}
       TBODY_RAW:
         rewrite: {{ rewriters: {nxt}, source: $IT }}
       TBODY:
@@ -400,8 +772,17 @@ def statement_tier(tier: int) -> str:
     transform:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
-      IC2:
+      IC2_NL:
         rewrite: {{ rewriters: {expr_rw}, source: $IC2R }}
+      # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
+      # keeps its newlines, and Ruby ends the statement at the last complete
+      # expression, so a line starting `&& ...` parses as a new statement and
+      # fails. Flattening the condition WHOLESALE was wrong: a condition can
+      # contain a `{{ |rec| ... }}` block whose newlines are its statement
+      # separators, and collapsing those put the block body on the `if` line.
+      # Transpile/MultilineCondition re-wraps the result afterwards.
+      IC2:
+        replace: {{ source: $IC2_NL, replace: '\\s*\\n\\s*(?<OP>&&|\\|\\|)', by: ' $OP' }}
       TBODY2_RAW:
         rewrite: {{ rewriters: {nxt}, source: $IT2 }}
       TBODY2:
@@ -420,8 +801,17 @@ def statement_tier(tier: int) -> str:
     transform:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
-      WC:
+      WC_NL:
         rewrite: {{ rewriters: {expr_rw}, source: $WCR }}
+      # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
+      # keeps its newlines, and Ruby ends the statement at the last complete
+      # expression, so a line starting `&& ...` parses as a new statement and
+      # fails. Flattening the condition WHOLESALE was wrong: a condition can
+      # contain a `{{ |rec| ... }}` block whose newlines are its statement
+      # separators, and collapsing those put the block body on the `if` line.
+      # Transpile/MultilineCondition re-wraps the result afterwards.
+      WC:
+        replace: {{ source: $WC_NL, replace: '\\s*\\n\\s*(?<OP>&&|\\|\\|)', by: ' $OP' }}
       WBODY_RAW:
         rewrite: {{ rewriters: {nxt}, source: $WB }}
       WBODY:
@@ -506,8 +896,17 @@ def statement_tier(tier: int) -> str:
     transform:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
-      SWC:
+      SWC_NL:
         rewrite: {{ rewriters: {expr_rw}, source: $SWCR }}
+      # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
+      # keeps its newlines, and Ruby ends the statement at the last complete
+      # expression, so a line starting `&& ...` parses as a new statement and
+      # fails. Flattening the condition WHOLESALE was wrong: a condition can
+      # contain a `{{ |rec| ... }}` block whose newlines are its statement
+      # separators, and collapsing those put the block body on the `if` line.
+      # Transpile/MultilineCondition re-wraps the result afterwards.
+      SWC:
+        replace: {{ source: $SWC_NL, replace: '\\s*\\n\\s*(?<OP>&&|\\|\\|)', by: ' $OP' }}
       SWBODY_RAW:
         rewrite: {{ rewriters: {nxt}, source: $SWB }}
       SWBODY:
@@ -516,6 +915,46 @@ def statement_tier(tier: int) -> str:
       case $SWC
       $SWBODY
       end
+  # `case X: {{ ... }}` -> `when X`, and `default: {{ ... }}` -> `else`.
+  #
+  # Rebuilt from the node's own fields, never from the label's text.
+  # rules/simplify.yml has already braced every case body and dropped the
+  # trailing `break`, so each case_statement here has exactly one
+  # compound_statement child and the body rewrite is the same shape as every
+  # other block.
+  #
+  # Doing it structurally is the point: stripping `case ...:` with a regex ate
+  # the first statement whenever the label line also held a `:` from a ternary.
+  - id: s-case{t}
+    rule:
+      kind: case_statement
+      inside: {{ kind: compound_statement }}
+      all:
+        - has: {{ field: value, pattern: $CV }}
+        - has: {{ kind: compound_statement, pattern: $CB }}
+    transform:
+      CBODY_RAW:
+        rewrite: {{ rewriters: {nxt}, source: $CB }}
+      CBODY:
+        replace: {{ source: $CBODY_RAW, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      when $CV
+      $CBODY
+  # `default:` has no `value` field, which is the whole discriminator.
+  - id: s-default{t}
+    rule:
+      kind: case_statement
+      inside: {{ kind: compound_statement }}
+      has: {{ kind: compound_statement, pattern: $DB }}
+      not: {{ has: {{ field: value, pattern: $DV }} }}
+    transform:
+      DBODY_RAW:
+        rewrite: {{ rewriters: {nxt}, source: $DB }}
+      DBODY:
+        replace: {{ source: $DBODY_RAW, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      else
+      $DBODY
   - id: s-block{t}
     rule:
       kind: compound_statement
@@ -556,6 +995,38 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
       kind: variadic_parameter_declaration
       has: { field: declarator, stopBy: end, kind: identifier, pattern: $PV }
     fix: "*$PV"
+  # ---- log chain operands ------------------------------------------------
+  # Used by s-log at every tier. Untiered because they do not recurse.
+  #
+  # g-head must come first in s-log's rewriter list: the `qCInfo(lcDisco)` call
+  # is also an operand of the chain, and g-val would otherwise interpolate it.
+  - id: g-head
+    rule:
+      kind: call_expression
+      has:
+        field: function
+        stopBy: end
+        kind: identifier
+        regex: '^qC(Info|Debug|Warning|Critical|Fatal)$'
+    fix: ""
+  # A string literal operand contributes its text. `u"..."` is a UTF-16 literal
+  # prefix, which Ruby has no equivalent of and does not need.
+  - id: g-lit
+    rule:
+      kind: string_literal
+      pattern: $GL
+    transform:
+      GLIT:
+        replace: { source: $GL, replace: '^u?"|"$', by: '' }
+    fix: "$GLIT"
+  # Any other operand is interpolated. `not: binary_expression` keeps this off
+  # the chain's own inner nodes, so only the leaves match.
+  - id: g-val
+    rule:
+      pattern: $GV
+      inside: { kind: binary_expression }
+      not: { kind: binary_expression }
+    fix: "#{$GV}"
   # ---- declarations ------------------------------------------------------
   # Comments. Must be a rewriter in THIS rule, not an earlier pass: `#` at the
   # start of a line is a preprocessor directive to a C++ parser, so converting
@@ -607,13 +1078,16 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
             stopBy: end
             kind: function_declarator
             all:
+              # qualified_identifier ONLY. A free function at namespace scope
+              # -- `static bool computeLocalChecksum(...)` -- has a plain
+              # identifier here, and MSCOPE's `::[^:]*$` strip then leaves the
+              # function's own name, so it was tagged
+              # `# @class computeLocalChecksum` and rubyify.py opened a class
+              # named after it. r-function handles that case with no tag.
               - has:
                   field: declarator
                   stopBy: end
-                  any:
-                    - kind: qualified_identifier
-                    - kind: identifier
-                    - kind: field_identifier
+                  kind: qualified_identifier
                   pattern: $QN
               - has: { field: parameters, kind: parameter_list, pattern: $MP }
         - has: { field: body, kind: compound_statement, pattern: $MB }
@@ -647,6 +1121,54 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
       $MSTRUCTS
       def $MNAME($MARGS)
       $MSTMTS
+      end
+  # A free function at namespace scope -- `static bool f(args) { ... }` -- is
+  # not a method, so it gets no `# @class` tag and rubyify.py leaves it at
+  # module level, which is where the C++ put it.
+  - id: r-function
+    rule:
+      kind: function_definition
+      all:
+        - has:
+            field: declarator
+            stopBy: end
+            kind: function_declarator
+            all:
+              - has:
+                  field: declarator
+                  stopBy: end
+                  any:
+                    - kind: identifier
+                    - kind: field_identifier
+                  pattern: $FQN
+              - has: { field: parameters, kind: parameter_list, pattern: $FMP }
+        - has: { field: body, kind: compound_statement, pattern: $FMB }
+        - not:
+            has:
+              field: declarator
+              stopBy: end
+              kind: qualified_identifier
+    transform:
+      FSTRUCTS:
+        rewrite:
+          rewriters: [s-struct-1]
+          source: $FMB
+          joinBy: "\n"
+      FRAW:
+        rewrite: { rewriters: STMT1_NOSTRUCT, source: $FMB }
+      FSTMTS:
+        replace: { source: $FRAW, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+      FMARGS:
+        rewrite:
+          rewriters: [p-named, p-unnamed, p-variadic]
+          source: $FMP
+          joinBy: ", "
+      FNAME:
+        convert: { source: $FQN, toCase: snakeCase }
+    fix: |-
+      $FSTRUCTS
+      def $FNAME($FMARGS)
+      $FSTMTS
       end
   # A struct of plain data members -> Struct.new(..., keyword_init: true), the
   # form the golden uses for `struct Entries`.
@@ -715,7 +1237,7 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
     transform:
       NRAW:
         rewrite:
-          rewriters: [r-comment-inner, r-method, r-struct, r-enum]
+          rewriters: [r-comment-inner, r-method, r-function, r-struct, r-enum]
           source: $NB
       NBODY:
         replace: { source: $NRAW, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
@@ -758,7 +1280,7 @@ FOOTER = '''transform:
   OUT:
     rewrite:
       rewriters: [r-comment, r-include-local, r-include-system, r-namespace,
-                  r-method, r-struct, r-enum]
+                  r-method, r-function, r-struct, r-enum]
       source: $TU
 
 fix: "$OUT"
