@@ -1,0 +1,41 @@
+# Misspellings in the C++ SOURCE, corrected before anything else renames.
+#
+# These are not transliteration rules -- they are corrections to the input.
+# `_qVueryServer` is a typo for `_queryServer` and `_shouldDiscoverLocaly` for
+# `_shouldDiscoverLocally`, both in the hand-trimmed discovery.cpp.
+#
+# They run in their own pass, ahead of simplify.yml, because simplify's
+# s-snake-identifier / s-snake-member would otherwise reach the identifier
+# first and turn it into `_q_vuery_server`, after which no correction keyed on
+# the original spelling can match. That is exactly what happened when the fix
+# lived in rubyify.py's SOURCE_TYPOS table at the end of the pipeline.
+#
+# `replace` on the matched text rather than a literal fix, so the leading
+# underscore of the member form is carried through by the same rule.
+id: t-typo-query-server
+language: cpp
+severity: hint
+rule:
+  any:
+    - kind: identifier
+    - kind: field_identifier
+  pattern: $T1
+  regex: 'qVueryServer'
+transform:
+  F1:
+    replace: { source: $T1, replace: 'qVuery', by: 'query' }
+fix: "$F1"
+---
+id: t-typo-discover-locally
+language: cpp
+severity: hint
+rule:
+  any:
+    - kind: identifier
+    - kind: field_identifier
+  pattern: $T2
+  regex: 'DiscoverLocaly'
+transform:
+  F2:
+    replace: { source: $T2, replace: 'DiscoverLocaly', by: 'DiscoverLocally' }
+fix: "$F2"

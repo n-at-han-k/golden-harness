@@ -30,12 +30,6 @@ CLASS_TAG = re.compile(r"^(\s*)# @class (\S+)\s*$")
 
 # Misspellings in discovery.cpp that the golden spells correctly. Listed so
 # the correction is a declared decision rather than an invisible one.
-SOURCE_TYPOS = {
-    "_qVueryServer": "_queryServer",
-    "qVueryServer": "queryServer",
-    "_shouldDiscoverLocaly": "_shouldDiscoverLocally",
-    "shouldDiscoverLocaly": "shouldDiscoverLocally",
-}
 
 # PascalCase class names only. Methods are NOT listed here: every camelCase
 # method snake_cases, including Qt's -- `QTimer::singleShot` becomes
@@ -124,8 +118,6 @@ def apply_naming(text: str) -> str:
 
     text = re.sub(r"(?m)^\s*#.*$", shelve, text)
 
-    for wrong, right in SOURCE_TYPOS.items():
-        text = re.sub(r"\b" + re.escape(wrong) + r"\b", right, text)
 
     # Log streams first: the fold needs the original call and operand names,
     # before snake_casing rewrites them.

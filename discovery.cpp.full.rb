@@ -176,9 +176,7 @@ module OCC
         item.error_string = "Encrypted vault files are not synchronized because they are currently not supported by this application."
       else
         case excluded
-        when CSYNC_NOT_EXCLUDED
-          nil
-        when CSYNC_FILE_SILENTLY_EXCLUDED
+        when CSYNC_NOT_EXCLUDED, CSYNC_FILE_SILENTLY_EXCLUDED
           raise
         when CSYNC_FILE_EXCLUDE_LIST
           item.error_string = "The file is listed on the ignore list."

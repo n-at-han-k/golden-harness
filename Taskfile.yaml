@@ -18,6 +18,7 @@ tasks:
       - python3 scripts/build_transform.py
       - python3 scripts/prepare.py tmp tmp
       - ast-grep scan -c sgconfig.yml -r scripts/rules/00-alias.yml --update-all tmp
+      - ast-grep scan -c sgconfig.yml -r scripts/rules/01-typos.yml --update-all tmp
       # To a fixpoint, and until it actually converges rather than for a fixed
       # count: an outer match consumes its inner one, and the `else if` and
       # case normalisations each create new nesting for the next round to find.

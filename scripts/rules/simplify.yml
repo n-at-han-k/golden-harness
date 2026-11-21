@@ -597,3 +597,64 @@ rule:
         kind: argument_list
         has: { pattern: $ACV }
 fix: "$ACV"
+---
+# camelCase identifiers -> snake_case, on the TREE rather than the text.
+#
+# This is why it belongs here and not in a regex: only identifier and
+# field_identifier nodes are touched, so camelCase inside a string literal
+# (`"checkForPermission: ERROR"`) or a comment cannot be hit. The text pass
+# this replaces had to shelve every comment first to avoid exactly that, and
+# still missed any identifier not followed by one of `(`, `.`, `,`, `)` or a
+# space -- which is how `originalPath` survived 8 times, including inside
+# `#{originalPath}`.
+#
+# Still valid C++, so it stays a C++ -> C++ rule and everything downstream
+# keeps parsing.
+#
+# Exclusions, all load-bearing:
+#   qC[A-Z]  the logging functions, which transform.yml's s-log matches by name
+#   lc[A-Z]  the logging CATEGORY, whose value is looked up from the
+#            Q_LOGGING_CATEGORY declaration by that exact spelling
+#   q[A-Z]   Qt's global functions -- qMax, qAsConst, qFuzzyCompare
+# PascalCase and SCREAMING_SNAKE are excluded by the `^[a-z]` anchor: they are
+# types, enum constants and macros, not variables.
+id: s-snake-identifier
+language: cpp
+severity: hint
+rule:
+  any:
+    - kind: identifier
+    - kind: field_identifier
+  pattern: $ID
+  regex: '^[a-z][a-zA-Z0-9]*[A-Z]'
+  not:
+    any:
+      - { regex: '^qC[A-Z]' }
+      - { regex: '^lc[A-Z]' }
+      - { regex: '^q[A-Z]' }
+fix: "$SNAKE"
+transform:
+  SNAKE:
+    convert: { source: $ID, toCase: snakeCase }
+---
+# A member, `_currentFolder` -> `_current_folder`.
+#
+# Separate from s-snake-identifier because `convert` splits on the leading
+# underscore and drops it, giving `current_folder` -- and that underscore is
+# the only thing marking the name as a member for the `@` prefix later. So the
+# prefix is stripped, converted, and put back.
+id: s-snake-member
+language: cpp
+severity: hint
+rule:
+  any:
+    - kind: identifier
+    - kind: field_identifier
+  pattern: $MID
+  regex: '^_[a-z][a-zA-Z0-9]*[A-Z]'
+transform:
+  MBARE:
+    replace: { source: $MID, replace: '^_', by: '' }
+  MSNAKE:
+    convert: { source: $MBARE, toCase: snakeCase }
+fix: "_$MSNAKE"

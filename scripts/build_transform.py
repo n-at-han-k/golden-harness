@@ -68,15 +68,18 @@ DEPTH = 12
 # declaration and expression rules, which would otherwise match the same nodes.
 # s-log precedes s-expr: a `qCInfo(lcDisco) << ...` statement is also an
 # expression_statement, and the first matching rewriter in the list wins.
-STMT_LEAVES = ["s-struct", "s-map-decl", "s-assert", "s-decl", "s-decl-bare",
-               "s-log", "s-expr", "s-return", "s-return-void", "s-next",
-               "s-break"]
+STMT_LEAVES = ["s-struct", "s-map-decl", "s-assert", "s-unreachable",
+               "s-decl", "s-decl-bare", "s-log", "s-expr", "s-return",
+               "s-return-void", "s-next", "s-break"]
 # s-lambda-call is a BLOCK, not a leaf: it rewrites the lambda's body through
 # {nxt}, so it can only exist while a next tier does. It must also come FIRST,
 # ahead of s-expr -- a call with a trailing lambda is also an
 # expression_statement, and the first matching rewriter in the list wins.
-STMT_BLOCKS = ["s-if-else", "s-if", "s-while", "s-foreach",
-               "s-for", "s-switch", "s-case", "s-default", "s-block"]
+# s-case-pair and s-case-absorbed precede s-case: a fall-through label pair is
+# also a plain case, and the first matching rewriter in the list wins.
+STMT_BLOCKS = ["s-if-else", "s-if", "s-while", "s-foreach", "s-for",
+               "s-switch", "s-case-pair", "s-case-absorbed", "s-case",
+               "s-default", "s-block"]
 
 
 def stmt_ids(tier: int, leaves_only: bool) -> str:
@@ -353,7 +356,7 @@ def statement_tier(tier: int) -> str:
           - has:
               field: function
               kind: identifier
-              regex: '^(OC_ASSERT|OC_ASSERT_X|OC_ENFORCE|OC_ENFORCE_X)$'
+              regex: '^(OC_ASSERT|OC_ASSERT_X|OC_ENFORCE|OC_ENFORCE_X|Q_ASSERT|Q_ASSERT_X)$'
           - has:
               field: arguments
               kind: argument_list
@@ -362,6 +365,22 @@ def statement_tier(tier: int) -> str:
       unless $ACOND
       raise
       end
+  # `Q_UNREACHABLE();` marks a branch that cannot be taken -- there is no
+  # condition to test, so it is a bare `raise` rather than s-assert's
+  # `unless ... raise ... end`. Listed with the other macro rules and ahead of
+  # s-expr, which would otherwise emit the call verbatim.
+  - id: s-unreachable{t}
+    rule:
+      kind: expression_statement
+      {inside}
+      has:
+        stopBy: end
+        kind: call_expression
+        has:
+          field: function
+          kind: identifier
+          regex: '^(Q_UNREACHABLE|OC_UNREACHABLE)$'
+    fix: "raise"
   - id: s-decl{t}
     rule:
       kind: declaration
@@ -915,6 +934,56 @@ def statement_tier(tier: int) -> str:
       case $SWC
       $SWBODY
       end
+  # A C++ fall-through label pair:
+  #
+  #     case CSYNC_NOT_EXCLUDED:
+  #     case CSYNC_FILE_SILENTLY_EXCLUDED:
+  #         Q_UNREACHABLE();
+  #
+  # In C++ the empty label shares the next label's body, so the faithful Ruby
+  # is one `when` with both values. Splitting them -- giving the first an empty
+  # body -- silently changes behaviour, because the first value then does
+  # nothing instead of reaching the shared body.
+  #
+  # Two rules, because one fix replaces one node: s-case-pair rewrites the
+  # label that HAS the body and pulls the preceding empty label's value in via
+  # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
+  # shape as the pair in rules/00-alias.yml.
+  #
+  # The empty body is `{{ }}`, courtesy of rules/simplify.yml's
+  # s-brace-case-empty, and "empty" is tested as having no named child.
+  - id: s-case-pair{t}
+    rule:
+      kind: case_statement
+      inside: {{ kind: compound_statement }}
+      all:
+        - has: {{ field: value, pattern: $PCV }}
+        - has: {{ kind: compound_statement, pattern: $PCB, has: {{ nthChild: 1 }} }}
+        - follows:
+            kind: case_statement
+            all:
+              - has: {{ field: value, pattern: $PCVPREV }}
+              - has: {{ kind: compound_statement, not: {{ has: {{ nthChild: 1 }} }} }}
+    transform:
+      PCBODY_RAW:
+        rewrite: {{ rewriters: {nxt}, source: $PCB }}
+      PCBODY:
+        replace: {{ source: $PCBODY_RAW, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      when $PCVPREV, $PCV
+      $PCBODY
+  # The empty label absorbed by s-case-pair above.
+  - id: s-case-absorbed{t}
+    rule:
+      kind: case_statement
+      inside: {{ kind: compound_statement }}
+      all:
+        - has: {{ field: value, pattern: $ACV }}
+        - has: {{ kind: compound_statement, not: {{ has: {{ nthChild: 1 }} }} }}
+        - precedes:
+            kind: case_statement
+            has: {{ kind: compound_statement, has: {{ nthChild: 1 }} }}
+    fix: ""
   # `case X: {{ ... }}` -> `when X`, and `default: {{ ... }}` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
