@@ -394,8 +394,18 @@ def statement_tier(tier: int) -> str:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{{...}}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: {{ rewriters: {expr_rw}, source: $DVR }}
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: {{ source: $DV_NL, replace: '\\s*\\n\\s*\\.', by: '.' }}
+      DV:
+        replace: {{ source: $DV_DOT, replace: '\\s*\\n\\s*(?<OP>&&|\\|\\|)', by: ' $OP' }}
     fix: "$DN = $DV"
   - id: s-decl-bare{t}
     rule:
@@ -447,14 +457,33 @@ def statement_tier(tier: int) -> str:
                 kind: argument_list
                 has: {{ kind: identifier, pattern: $LCAT }}
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: {{ source: $LRAW, replace: '^\\s*<<\\s*', by: '' }}
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: {{ source: $LP1, replace: '\\s*\\n\\s*<<\\s*', by: "\\" \\\\\\n\\"" }}
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: {{ source: $LP2, replace: '\\s*<<\\s*', by: ' ' }}
+      # Markers out.
       LPARTS:
-        replace: {{ source: $LRAW, replace: '^\\s+', by: '' }}
+        replace: {{ source: $LJOIN, replace: '@~@', by: '' }}
       LL1:
         replace: {{ source: $LFNAME, replace: '^qCWarning$', by: 'warn' }}
       LL2:
@@ -474,8 +503,18 @@ def statement_tier(tier: int) -> str:
       # `connect(job, &C::sig, this, [captures](args) {{ ... }})` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: {{ rewriters: {expr_rw}, source: $EXR }}
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: {{ source: $EX_NL, replace: '\\s*\\n\\s*\\.', by: '.' }}
+      EX:
+        replace: {{ source: $EX_DOT, replace: '\\s*\\n\\s*(?<OP>&&|\\|\\|)', by: ' $OP' }}
     fix: "$EX"
   - id: s-return{t}
     rule:
@@ -486,8 +525,18 @@ def statement_tier(tier: int) -> str:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{{a, b, c}}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: {{ rewriters: {expr_rw}, source: $RVR }}
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: {{ source: $RV_NL, replace: '\\s*\\n\\s*\\.', by: '.' }}
+      RV:
+        replace: {{ source: $RV_DOT, replace: '\\s*\\n\\s*(?<OP>&&|\\|\\|)', by: ' $OP' }}
     fix: "return $RV"
   - id: s-return-void{t}
     rule:
@@ -1087,9 +1136,28 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
     transform:
       GLIT:
         replace: { source: $GL, replace: '^u?"|"$', by: '' }
-    fix: "$GLIT"
+    # Bracketed with a `@~@` sentinel, which s-log strips at the end.
+    # A printable marker rather than a control character: YAML rejects a raw
+    # control char in a scalar, and this is far easier to see in tmp/.
+    #
+    # Without a marker the literal's own edge spaces are indistinguishable from
+    # layout once the quotes are gone: `u"Processing (db|local|remote) "` ends
+    # with a space that belongs in the output, and the separator pattern
+    # `\s*<<\s*` ate it -- while matching only `<<` instead kept the layout
+    # space on BOTH sides and gave three. The marker bounds the content, so
+    # `\s*` stops at it and exactly one separator space is inserted.
+    fix: "@~@$GLIT@~@"
   # Any other operand is interpolated. `not: binary_expression` keeps this off
   # the chain's own inner nodes, so only the leaves match.
+  # A parenthesised operand is unwrapped first: rules/simplify.yml puts parens
+  # round every ternary, and inside `#{...}` they are redundant -- the golden
+  # writes `#{a ? b : c}`. Listed before g-val so it claims the node.
+  - id: g-val-paren
+    rule:
+      kind: parenthesized_expression
+      inside: { kind: binary_expression }
+      has: { pattern: $GVP }
+    fix: "#{$GVP}"
   - id: g-val
     rule:
       pattern: $GV
@@ -1217,6 +1285,24 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
               field: declarator
               stopBy: end
               kind: qualified_identifier
+        # The class this file's methods belong to.
+        #
+        # `static bool computeLocalChecksum(...)` is a file-private helper at
+        # namespace scope, and the golden puts it inside the class with the
+        # methods it helps -- which is where a private helper belongs in Ruby.
+        # The scope is recovered by unification: the enclosing namespace also
+        # holds `ProcessDirectoryJob::start` and friends, so $FSCOPE binds to
+        # that qualified_identifier's scope and the emitted `# @class` tag makes
+        # rubyify.py group the helper with them.
+        #
+        # One class per namespace is assumed, which holds for this tree; a
+        # second class would see its helpers tagged with the first.
+        - inside:
+            kind: namespace_definition
+            has:
+              stopBy: end
+              kind: qualified_identifier
+              has: { field: scope, pattern: $FSCOPE }
     transform:
       FSTRUCTS:
         rewrite:
@@ -1235,6 +1321,7 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
       FNAME:
         convert: { source: $FQN, toCase: snakeCase }
     fix: |-
+      # @class $FSCOPE
       $FSTRUCTS
       def $FNAME($FMARGS)
       $FSTMTS

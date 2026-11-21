@@ -1,14 +1,6 @@
-# Working directory for the golden comparison.
-#
-# compare.py stages the single-file pipeline run through here instead of a
-# system tempdir, for two reasons:
-#   * rubocop resolves .rubocop.yml relative to the file it inspects, so a file
-#     under /tmp silently got rubocop's DEFAULT config -- which inserted
-#     `# frozen_string_literal: true` and shifted every line of the diff
-#   * each pipeline stage is left on disk, so a bad pass can be inspected
-#     rather than inferred
 tmp/
 in/
 out/
 in*/
 out*/
+SUCCESS_CRITERIA

@@ -44,8 +44,10 @@ module OCC
       if @query_local == :normal_query
         if (
           !@discovery_data.should_discover_locally(@current_folder.local) &&
-          @current_folder.local == @current_folder.original ||
-          !@discovery_data.should_discover_locally(@current_folder.original)
+          (
+            @current_folder.local == @current_folder.original ||
+            !@discovery_data.should_discover_locally(@current_folder.original)
+          )
         )
           @query_local = :parent_not_changed
         end
@@ -235,7 +237,7 @@ module OCC
           " | fileid:  #{db_entry.file_id} // #{server_entry.file_id}" \
           " | inode:  #{db_entry.inode} / #{local_entry.inode} /" \
           " | type:  #{db_entry.type} / #{local_entry.type} /" \
-          " #{server_entry.is_directory ? ItemTypeDirectory : ItemTypeFile}"
+          "#{server_entry.is_directory ? ItemTypeDirectory : ItemTypeFile}"
       }
 
       if @discovery_data.is_renamed(path.original)

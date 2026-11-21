@@ -38,9 +38,14 @@ module RuboCop
         MSG_BODY_GAP = 'Separate a long `if` line from its body with a blank line.'
         MSG_REDUNDANT = 'Drop the parentheses around a single-line condition.'
 
-        # Wrap a boolean condition past this width. Shorter ones read better
-        # inline, and the golden keeps them that way.
-        MIN_WIDTH = 80
+        # Wrap a boolean condition past this width.
+        #
+        # The golden is not consistent about where the line falls -- it leaves a
+        # 72-character chain inline and wraps a 68-character one -- so the
+        # threshold is a decision this cop makes, not one read off the file. It
+        # runs over the golden as well as the generated output, so whatever it
+        # picks, both sides get the same treatment.
+        MIN_WIDTH = 60
 
         # An unwrapped first line past this width gets a blank before the body.
         LONG_FIRST_LINE = 120
@@ -138,26 +143,54 @@ module RuboCop
           node.begin_type? && node.children.one? ? unwrap(node.children.first) : node
         end
 
-        # Flatten a nested and/or chain into its operands, left to right, so
-        # `a && (b || c)` yields [a, '&&', b, '||', c].
+        # Split a top-level and/or chain into its operands, left to right.
+        #
+        # It does NOT descend through parentheses. The C++ author's grouping is
+        # information -- `a && (b || c) && (d || e)` says which tests belong
+        # together -- and the golden keeps it:
+        #
+        #     if (
+        #       @query_server == :parent_not_changed &&
+        #       db_entry.is_valid &&
+        #       (
+        #         db_entry.type == :item_type_virtual_file_download ||
+        #         local_entry.type == :item_type_virtual_file_download
+        #       ) &&
+        #       ...
+        #     )
+        #
+        # Flattening it threw that away and emitted one flat operand list, so
+        # `unwrap` is used only to SEE the operator for the boolean? test, never
+        # to split past a paren.
         def operands(node, out = [])
-          inner = unwrap(node)
-          if inner.and_type? || inner.or_type?
-            operands(inner.lhs, out)
-            out << inner.operator.to_s
-            operands(inner.rhs, out)
+          if node.and_type? || node.or_type?
+            operands(node.lhs, out)
+            out << node.operator.to_s
+            operands(node.rhs, out)
           else
-            out << inner.source
+            out << node
           end
           out
         end
 
         def rewritten(node, condition)
           indent = node.source_range.source_line[/\A[ \t]*/]
-          lines = operands(condition).each_slice(2).map do |operand, operator|
-            "#{indent}  #{operand}#{operator ? " #{operator}" : ''}"
-          end
-          "(\n#{lines.join("\n")}\n#{indent})"
+          "(\n#{render(unwrap(condition), "#{indent}  ")}\n#{indent})"
+        end
+
+        # One operand per line at `indent`. A parenthesised operand that is
+        # itself a boolean chain is laid out the same way, one level deeper,
+        # which is what reproduces the golden's nesting.
+        def render(node, indent)
+          operands(node).each_slice(2).map do |operand, operator|
+            tail = operator ? " #{operator}" : ""
+            inner = unwrap(operand)
+            if operand.begin_type? && (inner.and_type? || inner.or_type?)
+              "#{indent}(\n#{render(inner, "#{indent}  ")}\n#{indent})#{tail}"
+            else
+              "#{indent}#{operand.source.gsub(/\s*\n\s*/, ' ')}#{tail}"
+            end
+          end.join("\n")
         end
       end
     end

@@ -305,8 +305,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-1
     rule:
@@ -358,14 +368,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -385,8 +414,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-1
     rule:
@@ -397,8 +436,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-1
     rule:
@@ -1233,8 +1282,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-2
     rule:
@@ -1286,14 +1345,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -1313,8 +1391,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-2
     rule:
@@ -1325,8 +1413,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-2
     rule:
@@ -2161,8 +2259,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-3
     rule:
@@ -2214,14 +2322,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -2241,8 +2368,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-3
     rule:
@@ -2253,8 +2390,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-3
     rule:
@@ -3089,8 +3236,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-4
     rule:
@@ -3142,14 +3299,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -3169,8 +3345,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-4
     rule:
@@ -3181,8 +3367,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-4
     rule:
@@ -4017,8 +4213,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-5
     rule:
@@ -4070,14 +4276,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -4097,8 +4322,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-5
     rule:
@@ -4109,8 +4344,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-5
     rule:
@@ -4945,8 +5190,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-6
     rule:
@@ -4998,14 +5253,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -5025,8 +5299,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-6
     rule:
@@ -5037,8 +5321,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-6
     rule:
@@ -5873,8 +6167,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-7
     rule:
@@ -5926,14 +6230,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -5953,8 +6276,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-7
     rule:
@@ -5965,8 +6298,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-7
     rule:
@@ -6801,8 +7144,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-8
     rule:
@@ -6854,14 +7207,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -6881,8 +7253,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-8
     rule:
@@ -6893,8 +7275,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-8
     rule:
@@ -7729,8 +8121,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-9
     rule:
@@ -7782,14 +8184,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -7809,8 +8230,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-9
     rule:
@@ -7821,8 +8252,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-9
     rule:
@@ -8657,8 +9098,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-10
     rule:
@@ -8710,14 +9161,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -8737,8 +9207,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-10
     rule:
@@ -8749,8 +9229,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-10
     rule:
@@ -9585,8 +10075,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-11
     rule:
@@ -9638,14 +10138,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -9665,8 +10184,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-11
     rule:
@@ -9677,8 +10206,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-11
     rule:
@@ -10513,8 +11052,18 @@ rewriters:
     transform:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
-      DV:
+      DV_NL:
         rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12], source: $DVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      DV_DOT:
+        replace: { source: $DV_NL, replace: '\s*\n\s*\.', by: '.' }
+      DV:
+        replace: { source: $DV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$DN = $DV"
   - id: s-decl-bare-12
     rule:
@@ -10566,14 +11115,33 @@ rewriters:
                 kind: argument_list
                 has: { kind: identifier, pattern: $LCAT }
     transform:
+      # NO joinBy here, deliberately -- unlike every other rewrite in this
+      # file. joinBy throws the unmatched text away, and the unmatched text is
+      # the `<<` separators, which carry the ONE thing the tree cannot
+      # otherwise tell us: where the author broke the chain. The golden keeps
+      # that grouping, one Ruby string per source line, so the separators are
+      # kept and then rewritten in place below.
       LRAW:
         rewrite:
-          rewriters: [g-head, g-lit, g-val]
+          rewriters: [g-head, g-lit, g-val-paren, g-val]
           source: $CHAIN
-          joinBy: " "
-      # The removed head leaves a leading separator space.
+      # g-head rewrote `qCInfo(lcDisco)` to nothing, leaving the chain's first
+      # separator dangling at the front.
+      LP1:
+        replace: { source: $LRAW, replace: '^\s*<<\s*', by: '' }
+      # A separator the author put on a new line becomes an adjacent string
+      # literal on a continuation line -- Ruby concatenates those, and it is
+      # what the golden writes.
+      LP2:
+        replace: { source: $LP1, replace: '\s*\n\s*<<\s*', by: "\" \\\n\"" }
+      # Any separator left was on the same line as its neighbours.
+      # One separator space, the way QDebug streams operands. `\s*` cannot
+      # cross g-lit's `@~@` markers, so a literal's own edge spaces survive.
+      LJOIN:
+        replace: { source: $LP2, replace: '\s*<<\s*', by: ' ' }
+      # Markers out.
       LPARTS:
-        replace: { source: $LRAW, replace: '^\s+', by: '' }
+        replace: { source: $LJOIN, replace: '@~@', by: '' }
       LL1:
         replace: { source: $LFNAME, replace: '^qCWarning$', by: 'warn' }
       LL2:
@@ -10593,8 +11161,18 @@ rewriters:
       # `connect(job, &C::sig, this, [captures](args) { ... })` statement came
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
-      EX:
+      EX_NL:
         rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12], source: $EXR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      EX_DOT:
+        replace: { source: $EX_NL, replace: '\s*\n\s*\.', by: '.' }
+      EX:
+        replace: { source: $EX_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "$EX"
   - id: s-return-12
     rule:
@@ -10605,8 +11183,18 @@ rewriters:
       # Rewritten, not emitted verbatim -- same reason as s-expr. A
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
-      RV:
+      RV_NL:
         rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12], source: $RVR }
+      # A C++ line wrap inside the expression survives into the Ruby, where it
+      # is a syntax error for an operator continuation and merely ugly for a
+      # method one (`item.error_string = "..."` then `.arg(x)` on the next
+      # line). Both are pulled back up. A `.` continuation takes no space; an
+      # operator one takes one. Newlines inside a block are left alone -- the
+      # patterns require an operator or a dot right after the break.
+      RV_DOT:
+        replace: { source: $RV_NL, replace: '\s*\n\s*\.', by: '.' }
+      RV:
+        replace: { source: $RV_DOT, replace: '\s*\n\s*(?<OP>&&|\|\|)', by: ' $OP' }
     fix: "return $RV"
   - id: s-return-void-12
     rule:
@@ -10676,9 +11264,28 @@ rewriters:
     transform:
       GLIT:
         replace: { source: $GL, replace: '^u?"|"$', by: '' }
-    fix: "$GLIT"
+    # Bracketed with a `@~@` sentinel, which s-log strips at the end.
+    # A printable marker rather than a control character: YAML rejects a raw
+    # control char in a scalar, and this is far easier to see in tmp/.
+    #
+    # Without a marker the literal's own edge spaces are indistinguishable from
+    # layout once the quotes are gone: `u"Processing (db|local|remote) "` ends
+    # with a space that belongs in the output, and the separator pattern
+    # `\s*<<\s*` ate it -- while matching only `<<` instead kept the layout
+    # space on BOTH sides and gave three. The marker bounds the content, so
+    # `\s*` stops at it and exactly one separator space is inserted.
+    fix: "@~@$GLIT@~@"
   # Any other operand is interpolated. `not: binary_expression` keeps this off
   # the chain's own inner nodes, so only the leaves match.
+  # A parenthesised operand is unwrapped first: rules/simplify.yml puts parens
+  # round every ternary, and inside `#{...}` they are redundant -- the golden
+  # writes `#{a ? b : c}`. Listed before g-val so it claims the node.
+  - id: g-val-paren
+    rule:
+      kind: parenthesized_expression
+      inside: { kind: binary_expression }
+      has: { pattern: $GVP }
+    fix: "#{$GVP}"
   - id: g-val
     rule:
       pattern: $GV
@@ -10806,6 +11413,24 @@ rewriters:
               field: declarator
               stopBy: end
               kind: qualified_identifier
+        # The class this file's methods belong to.
+        #
+        # `static bool computeLocalChecksum(...)` is a file-private helper at
+        # namespace scope, and the golden puts it inside the class with the
+        # methods it helps -- which is where a private helper belongs in Ruby.
+        # The scope is recovered by unification: the enclosing namespace also
+        # holds `ProcessDirectoryJob::start` and friends, so $FSCOPE binds to
+        # that qualified_identifier's scope and the emitted `# @class` tag makes
+        # rubyify.py group the helper with them.
+        #
+        # One class per namespace is assumed, which holds for this tree; a
+        # second class would see its helpers tagged with the first.
+        - inside:
+            kind: namespace_definition
+            has:
+              stopBy: end
+              kind: qualified_identifier
+              has: { field: scope, pattern: $FSCOPE }
     transform:
       FSTRUCTS:
         rewrite:
@@ -10825,6 +11450,7 @@ rewriters:
       FNAME:
         convert: { source: $FQN, toCase: snakeCase }
     fix: |-
+      # @class $FSCOPE
       $FSTRUCTS
       def $FNAME($FMARGS)
       $FSTMTS
