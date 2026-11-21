@@ -11425,8 +11425,14 @@ rewriters:
         #
         # One class per namespace is assumed, which holds for this tree; a
         # second class would see its helpers tagged with the first.
+        #
+        # stopBy: end is required: this rule runs as a REWRITER over the
+        # namespace's declaration_list, so the function's immediate parent is
+        # that list, not the namespace_definition. Without it the constraint
+        # never held and the whole free function came through as raw C++.
         - inside:
             kind: namespace_definition
+            stopBy: end
             has:
               stopBy: end
               kind: qualified_identifier

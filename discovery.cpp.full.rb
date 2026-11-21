@@ -398,7 +398,7 @@ module OCC
           opts.vfs.mode != :off &&
           @pin_state != :always_local
         )
-          item.type = ItemTypeVirtualFile
+          item.type = :item_type_virtual_file
         end
 
         process_file_analyze_local_info(item, path, local_entry, server_entry, db_entry, @query_server)
@@ -427,7 +427,7 @@ module OCC
         end
 
         if (base.type == :item_type_virtual_file_download)
-          item.type = ItemTypeVirtualFileDownload
+          item.type = :item_type_virtual_file_download
           done = true
 
           return
@@ -473,7 +473,7 @@ module OCC
           end
 
           if (
-            FileSystem.fileTimeToTime_t(info.last_write_time) != base.modtime ||
+            FileSystem.file_time_to_time_t(info.last_write_time) != base.modtime ||
             info.file_size != base.size ||
             info.is_directory
           )
@@ -490,7 +490,7 @@ module OCC
         end
 
         if (base.is_virtual_file)
-          item.type = ItemTypeVirtualFile
+          item.type = :item_type_virtual_file
         end
 
         was_deleted_on_server = @discovery_data.find_and_cancel_deleted_job(original_path).first
@@ -774,12 +774,12 @@ module OCC
       item.modtime = local_entry.modtime
 
       if local_entry.is_directory
-        item.type = ItemTypeDirectory
+        item.type = :item_type_directory
       else
         if local_entry.is_virtual_file
-          item.type = ItemTypeVirtualFile
+          item.type = :item_type_virtual_file
         else
-          item.type = ItemTypeFile
+          item.type = :item_type_file
         end
       end
 
@@ -924,9 +924,9 @@ module OCC
         item.type = base.type
 
         if (item.type == :item_type_virtual_file_download)
-          item.type = ItemTypeVirtualFile
+          item.type = :item_type_virtual_file
         elsif (item.type == :item_type_virtual_file_dehydration)
-          item.type = ItemTypeFile
+          item.type = :item_type_file
         end
 
         Log.info("sync.discovery") { "Rename detected (up)  #{item.local_name}  .  #{item.rename_target}" }
@@ -981,7 +981,7 @@ module OCC
       end
 
       if (db_entry.is_virtual_file || local_entry.is_virtual_file)
-        item.type = ItemTypeVirtualFileDownload
+        item.type = :item_type_virtual_file_download
       end
 
       if server_entry.checksum_header.is_empty
