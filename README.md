@@ -23,5 +23,5 @@ nix develop --command task bootstrap SRC=02-input/libsync/foo.cpp
 nix develop --command task verify SRC=02-input/libsync/foo.cpp
 
 # verify all gated goldens (regression gate)
- nix develop --command task
+nix develop --command task
 ```
