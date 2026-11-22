@@ -1397,13 +1397,27 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
       kind: parenthesized_expression
       inside: { kind: binary_expression }
       has: { pattern: $GVP }
-    fix: "#{$GVP}"
+    transform:
+      # Rewritten for the same reason as g-val: this is the rewriter that
+      # claims a parenthesised operand, and emitting it verbatim left
+      # `<< (ItemTypeDirectory)` as a bare constant in the message.
+      GVPR:
+        rewrite: { rewriters: [l-enum-1, l-enum-value-1], source: $GVP }
+    fix: "#{$GVPR}"
   - id: g-val
     rule:
       pattern: $GV
       inside: { kind: binary_expression }
       not: { kind: binary_expression }
-    fix: "#{$GV}"
+    transform:
+      # The operand is rewritten, not emitted verbatim: a log message can
+      # stream an enum value -- `<< ItemTypeDirectory` -- and it should read as
+      # a symbol like every other use of that name. Tier 1's enum rewriters are
+      # named because this rewriter is untiered; neither of them descends into
+      # an argument list, so neither can recurse.
+      GVR:
+        rewrite: { rewriters: [l-enum-1, l-enum-value-1], source: $GV }
+    fix: "#{$GVR}"
   # ---- declarations ------------------------------------------------------
   # Comments. Must be a rewriter in THIS rule, not an earlier pass: `#` at the
   # start of a line is a preprocessor directive to a C++ parser, so converting

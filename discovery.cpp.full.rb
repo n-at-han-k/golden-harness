@@ -131,9 +131,9 @@ module OCC
 
     def handle_excluded(path, local_name, is_directory, is_hidden, is_symlink, is_vault_file)
       if is_directory
-        excluded = @discovery_data.excludes.traversal_pattern_match(path, (ItemTypeDirectory))
+        excluded = @discovery_data.excludes.traversal_pattern_match(path, :item_type_directory)
       else
-        excluded = @discovery_data.excludes.traversal_pattern_match(path, (ItemTypeFile))
+        excluded = @discovery_data.excludes.traversal_pattern_match(path, :item_type_file)
       end
 
       is_invalid_pattern = false
@@ -272,7 +272,7 @@ module OCC
             " | fileid:  #{db_entry.file_id} // #{server_entry.file_id}" \
             " | inode:  #{db_entry.inode} / #{local_entry.inode} /" \
             " | type:  #{db_entry.type} / #{local_entry.type} /" \
-            "#{ItemTypeDirectory}"
+            "#{:item_type_directory}"
         else
           "Processing (db|local|remote)  #{path.original}" \
             " | valid:  #{db_entry.is_valid} / #{has_local} / #{has_server}" \
@@ -284,7 +284,7 @@ module OCC
             " | fileid:  #{db_entry.file_id} // #{server_entry.file_id}" \
             " | inode:  #{db_entry.inode} / #{local_entry.inode} /" \
             " | type:  #{db_entry.type} / #{local_entry.type} /" \
-            "#{ItemTypeFile}"
+            "#{:item_type_file}"
         end
       }
 
@@ -426,7 +426,7 @@ module OCC
           item.set_instruction(CSYNC_INSTRUCTION_UPDATE_METADATA)
           item.direction = :down
         else
-          process_file_analyze_local_info(item, path, local_entry, server_entry, db_entry, ParentNotChanged)
+          process_file_analyze_local_info(item, path, local_entry, server_entry, db_entry, :parent_not_changed)
 
           return
         end
@@ -591,11 +591,11 @@ module OCC
 
               if item.instruction == CSYNC_INSTRUCTION_RENAME
                 process_file_finalize(
-                  item, path, item.is_directory, (NormalQuery), @query_server
+                  item, path, item.is_directory, :normal_query, @query_server
                 )
               else
                 process_file_finalize(
-                  item, path, item.is_directory, (ParentDontExist), @query_server
+                  item, path, item.is_directory, :parent_dont_exist, @query_server
                 )
               end
 
@@ -1034,9 +1034,9 @@ module OCC
 
       if was_deleted_on_client.first
         if was_deleted_on_client.second == base.etag
-          finalize.call(process_rename.call(path), (ParentNotChanged))
+          finalize.call(process_rename.call(path), :parent_not_changed)
         else
-          finalize.call(process_rename.call(path), (NormalQuery))
+          finalize.call(process_rename.call(path), :normal_query)
         end
       else
         @pending_async_jobs += 1
@@ -1051,7 +1051,7 @@ module OCC
           )
             Log.info("sync.discovery") { "Can't rename because the etag has changed or the directory is gone #{original_path}" }
             post_process_local_new.call(path)
-            process_file_finalize(item, path, item.is_directory, NormalQuery, recurse_query_server)
+            process_file_finalize(item, path, item.is_directory, :normal_query, recurse_query_server)
           else
             @discovery_data.find_and_cancel_deleted_job(original_path)
 
@@ -1060,16 +1060,16 @@ module OCC
                 item,
                 process_rename.call(path),
                 item.is_directory,
-                NormalQuery,
-                (ParentNotChanged)
+                :normal_query,
+                :parent_not_changed
               )
             else
               process_file_finalize(
                 item,
                 process_rename.call(path),
                 item.is_directory,
-                NormalQuery,
-                (NormalQuery)
+                :normal_query,
+                :normal_query
               )
             end
           end
@@ -1265,7 +1265,7 @@ module OCC
         item.is_directory &&
         item.instruction != CSYNC_INSTRUCTION_IGNORE
       )
-        job = ProcessDirectoryJob.new(path, item, NormalQuery, InBlackList, this)
+        job = ProcessDirectoryJob.new(path, item, :normal_query, :in_black_list, this)
         connect(job, :finished, this, :sub_job_finished)
         @queued_jobs.push_back(job)
       else
