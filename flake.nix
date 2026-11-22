@@ -42,8 +42,96 @@
             hash = "sha256-PIuXm5sDJQMnTgQ5xqqsa6Kffo9+gcCM6evFcakPViw=";
           }} $out/bin/ast-grep
         '';
+        # Everything go-task needs at runtime, and nothing else. The goldens,
+        # discovery.cpp* and tmp/ are deliberately absent: the CLI transliterates
+        # whatever file it is handed and never consults a golden.
+        harnessSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./Taskfile.yaml
+            ./sgconfig.yml
+            ./.rubocop.yml
+            ./Gemfile
+            ./Gemfile.lock
+            ./scripts
+            ./cops
+          ];
+        };
+
+        # A wrapper around `task transpile`, not a second copy of the pipeline.
+        # The stage order lives in Taskfile.yaml alone -- written out twice it
+        # would drift, and a drifted CLI would quietly emit different Ruby from
+        # what the goldens are verified against.
+        cpp2rb = pkgs.writeShellApplication {
+          name = "cpp2rb";
+          runtimeInputs = [
+            gems
+            gems.wrappedRuby
+            ast-grep
+            pkgs.python3
+            pkgs.go-task
+            pkgs.coreutils
+          ];
+          meta.mainProgram = "cpp2rb";
+          text = /* bash */ ''
+            if [ "$#" -ne 2 ]; then
+              echo "usage: cpp2rb <input.cpp> <output.rb>" >&2
+              exit 2
+            fi
+
+            input=$1
+            output=$2
+
+            if [ ! -r "$input" ]; then
+              echo "cpp2rb: cannot read $input" >&2
+              exit 1
+            fi
+
+            # prepare.py and rubyify.py both select on the extension, so an
+            # unrecognised one is silently copied through untransformed rather
+            # than failing. Reject it here instead.
+            case $input in
+              *.cpp | *.cc | *.cxx | *.h | *.hpp) ;;
+              *)
+                echo "cpp2rb: $input is not a C++ source or header" \
+                     "(.cpp .cc .cxx .h .hpp)" >&2
+                exit 2
+                ;;
+            esac
+
+            # The pipeline needs a WRITABLE tree rooted where sgconfig.yml and
+            # .rubocop.yml live: build_transform.py writes scripts/transform.yml,
+            # ast-grep rewrites tmp/ in place, and both configs resolve
+            # ruleDirs/require relative to themselves.
+            work=$(mktemp -d)
+            trap 'rm -rf "$work"' EXIT
+            cp -R ${harnessSrc}/. "$work/"
+            chmod -R u+w "$work"
+
+            # Absolute, since go-task runs with $work as its CWD.
+            input=$(realpath "$input")
+            mkdir -p "$(dirname "$output")"
+            output=$(realpath -m "$output")
+
+            cd "$work"
+            # rubocop needs somewhere to write its cache; $HOME may be unset or
+            # read-only under `nix run`.
+            export XDG_CACHE_HOME="$work/.cache"
+            # The bundlerEnv wrapper, in place of `bundle exec rubocop`: there
+            # is no bundler-resolvable Gemfile in the store copy.
+            go-task transpile "SRC=$input" "OUT=$output" RUBOCOP=rubocop
+          '';
+        };
       in
       {
+        packages.default = cpp2rb;
+        packages.cpp2rb = cpp2rb;
+
+        apps.default = {
+          type = "app";
+          program = "${cpp2rb}/bin/cpp2rb";
+        };
+
         devShells.default = lib.mkRubyShell {
           buildInputs = [
             gems

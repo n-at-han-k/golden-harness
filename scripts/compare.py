@@ -182,13 +182,21 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--generated", type=pathlib.Path,
                     help=f"the generated Ruby (default: {DEFAULT_GENERATED})")
+    # The golden is per-source: discovery.cpp has discovery.cpp.rb and
+    # discovery.cpp.full has discovery.cpp.full.rb. Without this the full run
+    # was scored against the TRIMMED golden, so it always reported a divergence
+    # at line 131 -- where the trimmed golden simply stops -- and exited 1 on a
+    # run that had in fact reproduced its own golden exactly.
+    ap.add_argument("--golden", type=pathlib.Path, default=GOLDEN,
+                    help=f"the hand-written target (default: {GOLDEN.name})")
     ap.add_argument("--features", action="store_true",
                     help="only print the transformation checklist")
     ap.add_argument("--context", type=int, default=3)
     args = ap.parse_args()
 
-    if not GOLDEN.exists():
-        print(f"error: {GOLDEN} missing", file=sys.stderr)
+    golden_path = args.golden
+    if not golden_path.exists():
+        print(f"error: {golden_path} missing", file=sys.stderr)
         return 2
 
     produced = args.generated or DEFAULT_GENERATED
@@ -202,7 +210,7 @@ def main() -> int:
         done, total = report_features(generated)
         return 0 if done == total else 1
 
-    golden_lines = rubocop_format(GOLDEN.read_text(), "golden").split("\n")
+    golden_lines = rubocop_format(golden_path.read_text(), "golden").split("\n")
     gen_lines = rubocop_format(generated, "generated").split("\n")
 
     # The golden is a prefix target: compare only as far as it goes.
@@ -214,7 +222,7 @@ def main() -> int:
     ratio = matcher.ratio()
     same = sum(block.size for block in matcher.get_matching_blocks())
 
-    print(f"golden:     {len(golden_lines)} lines  ({GOLDEN.name})")
+    print(f"golden:     {len(golden_lines)} lines  ({golden_path.name})")
     print(f"generated:  {len(gen_lines)} lines")
     print(f"agreement:  {same}/{span} lines  ({100 * ratio:.1f}% similarity)")
     print()
@@ -224,8 +232,11 @@ def main() -> int:
         if a != b:
             first = i
             break
-    if first is None and len(g_norm) == len(o_norm):
+    if first is None and len(gen_lines) == len(golden_lines):
         print("golden fully reproduced")
+    elif first is None:
+        print(f"golden reproduced as a prefix "
+              f"({len(golden_lines)} of {len(gen_lines)} lines)")
     elif first is not None:
         print(f"first divergence at golden line {first + 1}:")
         lo = max(0, first - args.context)

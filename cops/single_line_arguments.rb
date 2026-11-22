@@ -31,65 +31,90 @@ module RuboCop
         MSG = 'Keep an argument list on one line.'
         MSG_SPLIT = 'Put one argument per line; the joined call is too long.'
 
-        # How long the joined argument list may be.
+        # The column past which a call is laid out one argument per line.
         #
-        # Measured off the golden's wrapped calls: it joins them at argument
-        # lengths of 59 and 64 and puts one argument per line at 80 and 86, so
-        # anything in 65..79 separates the two.
+        # This is a DECISION, not a measurement. The golden cannot be fitted:
+        # it splits calls whose one-line forms are 163, 130, 123 and 117
+        # columns while keeping others inline at 186, 138 and 123, so the two
+        # sets overlap and no threshold -- and no "did the C++ wrap it?" test,
+        # which disagrees on two more sites -- separates them. Earlier versions
+        # of this cop measured the ARGUMENT list instead and overlap there too
+        # (74 split, 76 inline).
         #
-        # The ARGUMENTS are measured, not the finished line. Cops run in the
-        # same pass as the indentation cops, so the indentation a correction
-        # sees is whatever the file happens to have at that moment -- a width
-        # including it split a call that was comfortably inside the limit by
-        # the time the file settled.
-        ARGS_WIDTH = 72
+        # So one uniform limit is picked and applied to BOTH sides. 120 is the
+        # conventional Ruby line limit, and it keeps every call the golden
+        # splits split.
+        LINE_WIDTH = 120
 
         def on_send(node)
           args = node.arguments
           return if args.empty?
           # A trailing block is not part of the argument list.
           return if node.block_literal?
+          return if node.loc.begin.nil? || node.loc.end.nil?
+          # `Struct.new` belongs to MultilineStructNew, which lays it out one
+          # member per line regardless of width. Its joined form is only 83
+          # columns, so without this the two cops would fight forever.
+          return if struct_new?(node)
           if args.one?
             join_up(node, args.first)
             return
           end
-          if args.first.source_range.line == args.last.source_range.last_line
-            # Splitting applies only to a call ALREADY in the wrapped form --
-            # one whose `(` ends its line. A call the source put on a single
-            # line stays there however long it is, which is what the golden
-            # does with the 190-column `handle_excluded(...)`.
-            split(node, args) if wrapped?(node) && too_long?(node, args)
-            return
-          end
-          return if one_per_line?(args)
-          # A trailing block is not part of the argument list.
-          return if node.block_literal?
-          # Only the wrap BETWEEN arguments is a C++ artefact. An argument that
-          # itself spans lines carries its own layout, and in Ruby a newline is
-          # a statement separator -- flattening a `lambda { ... }` argument ran
-          # its statements together into
+          # An argument that itself spans lines carries its own layout. In Ruby
+          # a newline is a statement separator -- flattening a `lambda { ... }`
+          # argument ran its statements together into
           #   lambda { @pending_async_jobs -= 1 QTimer.single_shot(...) if ...
           # which destroyed two methods and stopped the file parsing.
           return if args.any?(&:multiline?)
 
-          add_offense(node) do |corrector|
-            corrector.replace(arguments_range(node), joined(args))
+          if split?(node, args)
+            split(node, args)
+          else
+            join(node, args)
           end
         end
         alias on_csend on_send
 
         private
 
-        # The call's `(` ends its line, so the arguments were already pushed
-        # onto lines of their own.
-        def wrapped?(node)
-          return false if node.loc.begin.nil?
-
-          node.loc.begin.source_line[node.loc.begin.column + 1..].strip.empty?
+        def struct_new?(node)
+          node.method?(:new) && node.receiver&.source == "Struct"
         end
 
-        def too_long?(_node, args)
-          joined(args).length >= ARGS_WIDTH
+        # A call wide enough to need splitting, unless a condition owns it.
+        def split?(node, args)
+          return false if inside_condition?(node)
+
+          one_line_width(node, args) > LINE_WIDTH
+        end
+
+        # The column the call would END at with every argument on one line.
+        #
+        # The node's START COLUMN is the base, not the line's indentation:
+        # `job = RequestEtagJob.new(...)` has the send node beginning at
+        # `RequestEtagJob`, so measuring from the indent would lose the
+        # `job = ` and under-report by six columns.
+        def one_line_width(node, args)
+          src = node.source
+          range = arguments_range(node)
+          from = range.begin_pos - node.source_range.begin_pos
+          to = range.end_pos - node.source_range.begin_pos
+          flat = (src[0...from] + joined(args) + src[to..]).gsub(/\s*\n\s*/, " ")
+          node.source_range.column + flat.length
+        end
+
+        # A call sitting in an `if`/`while`/`until` CONDITION is left alone.
+        # MultilineCondition owns that layout, and the golden keeps the
+        # 186-column `if handle_excluded(...)` on one line rather than break an
+        # argument list inside a condition it is also wrapping.
+        def inside_condition?(node)
+          node.each_ancestor(:if, :while, :until).any? do |ancestor|
+            condition = ancestor.condition
+            next false if condition.nil?
+
+            condition.source_range.begin_pos <= node.source_range.begin_pos &&
+              node.source_range.end_pos <= condition.source_range.end_pos
+          end
         end
 
         # A lone argument pushed onto its own line comes back up onto the call's.
@@ -130,18 +155,35 @@ module RuboCop
           end
         end
 
-        # One argument per line, at one level in from the call.
+        # One argument per line, `(` and `)` each alone on their own line.
+        #
+        # The whole parenthesised span is replaced, not just the arguments: an
+        # earlier version replaced only the ARGUMENTS range, which left the
+        # first argument stranded on the `(` line whenever the C++ had put it
+        # there, and nothing downstream moved it -- rubocop does not normalise
+        # the indentation of a wrapped argument list (measured with `--only
+        # Layout/FirstArgumentIndentation,Layout/ArgumentAlignment`).
+        #
+        # Comparing against the rendered target makes both this and `join`
+        # idempotent: the layout is a function of the node's indent and the
+        # argument sources, so one correction reaches a fixed point.
         def split(node, args)
-          indent = "#{node.source_range.source_line[/\A[ \t]*/]}  "
-          add_offense(node, message: MSG_SPLIT) do |corrector|
-            corrector.replace(arguments_range(node),
-                              args.map(&:source).join(",\n#{indent}"))
-          end
+          base = node.source_range.source_line[/\A[ \t]*/]
+          body = args.map { |a| "#{base}  #{a.source}" }.join(",\n")
+          rewrite(node, "(\n#{body}\n#{base})", MSG_SPLIT)
         end
 
-        # Each argument starting on its own line is intentional layout.
-        def one_per_line?(args)
-          args.map { |a| a.source_range.line }.uniq.size == args.size
+        def join(node, args)
+          rewrite(node, "(#{joined(args)})", MSG)
+        end
+
+        def rewrite(node, target, message)
+          range = node.loc.begin.join(node.loc.end)
+          return if range.source == target
+
+          add_offense(node, message: message) do |corrector|
+            corrector.replace(range, target)
+          end
         end
 
         def arguments_range(node)
