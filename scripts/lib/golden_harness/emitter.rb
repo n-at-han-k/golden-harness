@@ -38,6 +38,7 @@ module GoldenHarness
       @class_name = nil
       @pending_updates = nil
       @pending_before = nil
+      @constants = Set.new
       @operator_lhs = nil
       @operator_rhs = nil
       @ternary_branch = {}
@@ -486,6 +487,7 @@ module GoldenHarness
         value = init && @cst.field(init, :value)
         return [] if name.nil? || value.nil?
 
+        @constants << @cst.text(name)
         [Constant(snake(@cst.text(name)).upcase, expr(value))]
       end
 

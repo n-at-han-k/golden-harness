@@ -16,6 +16,7 @@ require:
   - ./cops/single_line_block.rb
   - ./cops/multiline_string.rb
   - ./cops/macro_parentheses.rb
+  - ./cops/infix_operator.rb
   - ./cops/block_delimiters.rb
   - ./cops/no_blank_line_before_branch.rb
   - ./cops/disable_syntax_ternary_autocorrect.rb
@@ -250,6 +251,13 @@ Transpile/SingleLineBlock:
   Description: >-
     Join a value-producing block onto one line. Unparser lays every block out
     across lines; the golden keeps a log-message block inline.
+
+Transpile/InfixOperator:
+  Enabled: true
+  Description: >-
+    Write an arithmetic operator infix when it sits inside a comparison.
+    Unparser emits the dot form for a nested binary send; inside a comparison
+    the arithmetic binds tighter and the grouping cannot change.
 
 Transpile/MacroParentheses:
   Enabled: true

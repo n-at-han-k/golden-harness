@@ -91,6 +91,11 @@ module GoldenHarness
       # that says so -- 03_simplify.yml keeps it for exactly this reason.
       # A PascalCase name that is never a receiver is an enum value.
       def name_node(text)
+        # A name the emitter has hoisted into a constant -- `retrySyncLimitC`
+        # from an anonymous namespace becomes `RETRY_SYNC_LIMIT_C`, and every
+        # mention of it has to follow.
+        return Const(snake(text).upcase) if @constants.include?(text)
+
         literal = LITERALS[text]
         return send(literal) if literal
         # A send, not a local: `__method__` IS a method, and unparser refuses
@@ -183,6 +188,9 @@ module GoldenHarness
         return expr(args.first ? @cst.named(@cst.field(node, :arguments)).first : nil) if wrapper?(fn, args)
 
         if fn.kind == "field_expression"
+          placed = qt_arg(fn, node)
+          return placed if placed
+
           return send_with_block(expr(@cst.field(fn, :argument)),
                                  member(@cst.field(fn, :field)), node, args)
         end
@@ -249,6 +257,55 @@ module GoldenHarness
         Binary(Binary(Lvar(name), :<, Const(@cst.text(argument))), :>, Paren(args.first))
       end
 
+      STRING_NODES = %w[string_literal raw_string_literal concatenated_string].freeze
+
+      # `"a %1 b".arg(x)` -> `"a #{x} b"`.
+      #
+      # Qt's own interpolation. 04_interp.yml does this for a single literal;
+      # here it also covers the adjacent-literal form, and keeps the author's
+      # line grouping, because the substitution happens inside each group.
+      def qt_arg(fn, node)
+        return nil unless @cst.text(@cst.field(fn, :field)) == "arg"
+
+        receiver = @cst.field(fn, :argument)
+        return nil unless STRING_NODES.include?(receiver.kind)
+
+        values = @cst.named(@cst.field(node, :arguments)).filter_map { expr(_1) }
+        return nil if values.empty?
+
+        groups = string_groups(receiver).map { |text| Dstr(merge(placeholders(text, values))) }
+        groups.one? ? groups.first : Dstr(groups)
+      end
+
+      # One string per source line, as `concatenated` groups them.
+      def string_groups(node)
+        return [string_value(node)] unless node.kind == "concatenated_string"
+
+        groups = []
+        line = nil
+        @cst.named(node).each do |literal|
+          at = @cst.line(literal)
+          groups << +"" if line.nil? || at != line
+          groups[-1] << string_value(literal)
+          line = at
+        end
+        groups
+      end
+
+      # `%1`/`%2` replaced by the matching argument.
+      def placeholders(text, values)
+        parts = []
+        rest = text
+        while (match = rest.match(/%(\d+)/))
+          parts << Str(match.pre_match) unless match.pre_match.empty?
+          value = values[match[1].to_i - 1]
+          parts << (value ? Interp(value) : Str(match[0]))
+          rest = match.post_match
+        end
+        parts << Str(rest) unless rest.empty?
+        parts
+      end
+
       # A Qt literal wrapper applied to one literal.
       def wrapper?(fn, args)
         fn.kind == "identifier" && LITERAL_WRAPPERS.include?(@cst.text(fn)) && args.one?
@@ -302,11 +359,20 @@ module GoldenHarness
       end
 
       def lambda_name(node)
-        literal = @cst.named(@cst.field(node, :arguments))
-                      .find { %w[string_literal concatenated_string].include?(_1.kind) }
-        return "callback" if literal.nil?
+        arguments = @cst.named(@cst.field(node, :arguments))
+        literal = arguments.find { %w[string_literal concatenated_string].include?(_1.kind) }
+        if literal
+          return snake(string_value(@cst.named(literal).first || literal).gsub(/[^A-Za-z0-9_]/, "_"))
+        end
 
-        snake(string_value(@cst.named(literal).first || literal).gsub(/[^A-Za-z0-9_]/, "_"))
+        # `connect(this, &Folder::syncFinished, this, <lambda>, ...)` -- the
+        # lambda is a slot for the signal named before it, and the golden calls
+        # it `on_sync_finished`. There is nothing else in the source to name it
+        # after.
+        signal = arguments.select { _1.kind == "qualified_identifier" }.last
+        return "callback" if signal.nil?
+
+        "on_#{snake(@cst.text(signal).split("::").last)}"
       end
 
       def binary(node)
@@ -328,11 +394,22 @@ module GoldenHarness
         # so `!n` is always false and the branch would never be taken. Which
         # names are integers is the oracle's to say -- `!query` on a pointer
         # must stay `!query`.
-        when "!" then integer?(argument) ? Binary(operand, :==, Int(0)) : Not(operand)
+        when "!" then negate(argument, operand)
         when "-" then Call(operand, :-@)
         when "+" then operand
         else operand
         end
+      end
+
+      # `!(_engine.isNull())` -- s-oc-ensure-not writes those parens to keep the
+      # C++ parsing, and they group nothing by the time it is Ruby.
+      def negate(argument, operand)
+        return Binary(operand, :==, Int(0)) if integer?(argument)
+
+        inner = argument.kind == "parenthesized_expression" ? @cst.named(argument).first : nil
+        return Not(expr(inner)) if inner && !%w[binary_expression].include?(inner.kind)
+
+        Not(operand)
       end
 
       def integer?(node)

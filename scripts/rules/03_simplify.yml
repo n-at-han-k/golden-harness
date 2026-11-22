@@ -329,7 +329,14 @@ rule:
     - has:
         field: arguments
         kind: argument_list
-        has: { kind: string_literal, pattern: $QSTR }
+        has:
+          pattern: $QSTR
+          any:
+            - { kind: string_literal }
+            # `tr("a %1 " "b")` -- adjacent literals, which C++ concatenates.
+            # Matching only string_literal left the `tr(` in place and the
+            # `.arg()` after it uninterpolated.
+            - { kind: concatenated_string }
 fix: "$QSTR"
 ---
 # Delete every comment except the licence header.

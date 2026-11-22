@@ -173,7 +173,7 @@ module GoldenHarness
         # `SqlQuery query(db);` -- a constructor, which the C++ spells like a
         # declaration with an argument list rather than with an `=`.
         arguments = @cst.child(init, "argument_list")
-        if arguments && type && !@facts.enum_type?(@cst.text(type))
+        if arguments && constructible?(type)
           values = @cst.named(arguments).filter_map { expr(_1) }
           # `QByteArray sql("SELECT ...")` -- a Qt string built from a literal
           # is just the literal; there is no Qt string type in Ruby. Same
@@ -182,6 +182,13 @@ module GoldenHarness
             values.one? && STRING_TYPES.include?(@cst.text(type))
 
           return [Local(local_name(@cst.text(name)), Call(ConstPath(@cst.text(type)), :new, *values))]
+        end
+
+        if arguments
+          # `bool re(_definition.ignoreHiddenFiles)` -- a primitive with a
+          # constructor's shape constructs nothing.
+          values = @cst.named(arguments).filter_map { expr(_1) }
+          return [Local(local_name(@cst.text(name)), values.first)] if values.one?
         end
 
         assign(local_name(@cst.text(name)), @cst.field(init, :value))
