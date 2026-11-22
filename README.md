@@ -2,6 +2,8 @@
 
 ![Golden harness](res/based.png)
 
+Reference: [Lil B the Based God](https://www.deviantart.com/waitandbleed342/art/lil-b-the-based-god-362579562)
+
 Incremental C++ -> Ruby transliteration harness.
 
 ## Layout
