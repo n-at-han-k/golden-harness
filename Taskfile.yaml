@@ -3,18 +3,55 @@
 version: '3'
 
 vars:
-  SRC: 02-input/libsync/common/syncjournaldb.cpp
   RUBOCOP: bundle exec rubocop
 
 tasks:
   default:
+    desc: Run the pipeline for every input that has a golden
+    cmds:
+      # 02-input holds the whole source tree, so that libclang can resolve the
+      # headers a translation unit includes. Only a case with a golden is a
+      # gated case; the rest are there to be included, not transliterated.
+      - |
+        fail=0
+        for golden in $(cd 01-golden && find . -name '*.rb' | sed 's|^\./||' | sort); do
+          src="02-input/${golden%.rb}"
+          if [ ! -f "$src" ]; then
+            echo "SKIP  $golden  (no input)"
+            continue
+          fi
+          # `|| true`: go-task runs a command with errexit, and a case that
+          # differs from its golden exits non-zero, which would abort the loop
+          # on the first failure instead of reporting every case.
+          task case SRC="$src" >/dev/null 2>&1 || true
+          # `|| true` again, for the same reason, and because `grep -c` exits
+          # non-zero when the count is ZERO -- so a PASSING case would be the
+          # one that aborted the loop.
+          lines=$(diff -u "01-golden/$golden" "03-output/$golden" 2>/dev/null | grep -c '^[-+]' || true)
+          if [ "$lines" = "0" ]; then
+            echo "PASS  $golden"
+          else
+            echo "FAIL  $golden  ($lines changed lines)"
+            fail=1
+          fi
+        done
+        exit $fail
+
+  case:
     desc: Run the pipeline on SRC and diff the result against its golden
+    requires:
+      vars: [SRC]
     vars:
       REL: '{{trimPrefix "02-input/" .SRC}}'
       STAGE: '{{trimSuffix ".full" (trimPrefix "02-input/" .SRC)}}'
     cmds:
       - rm -rf tmp && mkdir -p "tmp/work/$(dirname {{.STAGE}})" && cp {{.SRC}} tmp/work/{{.STAGE}}
-      - python3 scripts/01_build_transform.py
+      # The type oracle. libclang sees the headers, so what the syntax alone
+      # can only guess at -- an enum constant against a static method, a
+      # container's element type, internal linkage -- is answered rather than
+      # inferred. Advisory: the emitter falls back to its own reading when a
+      # fact is absent.
+      - ruby scripts/09_oracle.rb {{.SRC}} tmp/work/facts.json || true
       - python3 scripts/02_prepare.py tmp/work tmp/work
       - ast-grep scan -c sgconfig.yml -r scripts/rules/01_alias.yml --update-all tmp/work
       - ast-grep scan -c sgconfig.yml -r scripts/rules/02_typos.yml --update-all tmp/work
@@ -30,8 +67,10 @@ tasks:
           esac
         done
       - ast-grep scan -c sgconfig.yml -r scripts/rules/04_interp.yml --update-all tmp/work
-      - ast-grep scan -c sgconfig.yml -r scripts/07_transform.yml --update-all tmp/work
-      - python3 scripts/03_rubyify.py tmp/work tmp/work
-      - '{{.RUBOCOP}} -A -c .rubocop.yml tmp/work || true'
+      # The emitter. Builds a `parser` AST from the C++ tree and lets unparser
+      # print it, so recursion is Ruby's and there is no DEPTH to unroll.
+      - ruby scripts/08_emit.rb tmp/work
+      - cp tmp/work/{{.STAGE}} tmp/work/{{.STAGE}}.rb
+      - '{{.RUBOCOP}} -A -c .rubocop.yml tmp/work/{{.STAGE}}.rb || true'
       - mkdir -p "03-output/$(dirname {{.REL}})" && cp tmp/work/{{.STAGE}}.rb 03-output/{{.REL}}.rb
       - diff -u 01-golden/{{.REL}}.rb 03-output/{{.REL}}.rb

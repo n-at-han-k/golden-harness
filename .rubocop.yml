@@ -13,6 +13,8 @@ require:
   - ./cops/multiline_condition.rb
   - ./cops/blank_line_between_statements.rb
   - ./cops/single_line_arguments.rb
+  - ./cops/single_line_block.rb
+  - ./cops/block_delimiters.rb
   - ./cops/no_blank_line_before_branch.rb
   - ./cops/disable_syntax_ternary_autocorrect.rb
   - ./cops/constants_first.rb
@@ -240,6 +242,19 @@ Transpile/SingleLineArguments:
     C++ source. No built-in does this: Layout/LineLength is the only cop that
     moves code between lines and it only splits, and it is disabled here
     because it would wrap transliterated expressions arbitrarily.
+
+Transpile/SingleLineBlock:
+  Enabled: true
+  Description: >-
+    Join a value-producing block onto one line. Unparser lays every block out
+    across lines; the golden keeps a log-message block inline.
+
+Transpile/BlockDelimiters:
+  Enabled: true
+  Description: >-
+    Use `do ... end` for a multi-line block, braces for one inside a condition.
+    Style/BlockDelimiters cannot do it: its line_count_based style rewrites the
+    condition case too, and the golden keeps braces there.
 
 Transpile/NoBlankLineBeforeBranch:
   Enabled: true

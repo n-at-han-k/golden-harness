@@ -1,0 +1,176 @@
+/*
+ * Copyright (C) by Klaas Freitag <freitag@owncloud.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+ * for more details.
+ */
+#include "gui/connectionvalidator.h"
+
+#include "gui/fetchserversettings.h"
+#include "gui/networkinformation.h"
+#include "libsync/account.h"
+#include "libsync/creds/abstractcredentials.h"
+#include "libsync/networkjobs.h"
+#include "libsync/networkjobs/checkserverjobfactory.h"
+#include "libsync/networkjobs/jsonjob.h"
+
+#include <QJsonObject>
+#include <QLoggingCategory>
+#include <QNetworkProxyFactory>
+#include <QNetworkReply>
+#include <QtConcurrent/QtConcurrentRun>
+
+using namespace std::chrono_literals;
+using namespace Qt::Literals::StringLiterals;
+
+namespace {
+
+auto fetchSettingsTimeout()
+{
+    return std::min<std::chrono::milliseconds>(20s, OCC::AbstractNetworkJob::httpTimeout);
+}
+}
+namespace OCC {
+
+Q_LOGGING_CATEGORY(lcConnectionValidator, "sync.connectionvalidator", QtInfoMsg)
+
+
+ConnectionValidator::ConnectionValidator(AccountPtr account, QObject *parent)
+    : QObject(parent)
+    , _account(account)
+{
+    // Hard timeout: abort the validator if it hasn't completed within 60 seconds.
+    // This prevents the account from getting stuck in "Connecting" state when
+    // a network change leaves HTTP requests hanging on a dead socket.
+    auto timer = new QTimer(this);
+    timer->setSingleShot(true);
+    timer->setInterval(60s);
+    connect(timer, &QTimer::timeout, this, [this] {
+        qCWarning(lcConnectionValidator) << u"ConnectionValidator for" << _account->displayNameWithHost() << u"timed out after" << _duration;
+        _errors.append(tr("timeout"));
+        reportResult(Timeout);
+    });
+    timer->start();
+}
+
+void ConnectionValidator::setClearCookies(bool clearCookies)
+{
+    _clearCookies = clearCookies;
+}
+
+void ConnectionValidator::checkServer(ConnectionValidator::ValidationMode mode)
+{
+    _mode = mode;
+    qCDebug(lcConnectionValidator) << u"Checking server and authentication";
+
+    auto checkServerFactory = CheckServerJobFactory::createFromAccount(_account, _clearCookies, this);
+    auto checkServerJob = checkServerFactory.startJob(_account->url(), this);
+
+    connect(checkServerJob->reply()->manager(), &AccessManager::sslErrors, this, [this](QNetworkReply *reply, const QList<QSslError> &errors) {
+        Q_UNUSED(reply)
+        Q_EMIT sslErrors(errors);
+    });
+
+    connect(checkServerJob, &CoreJob::finished, this, [checkServerJob, this]() {
+        if (checkServerJob->success()) {
+            const auto result = checkServerJob->result().value<CheckServerJobResult>();
+
+            // adopt the new cookies
+            _account->accessManager()->setCookieJar(checkServerJob->reply()->manager()->cookieJar());
+
+            slotStatusFound(result.serverUrl(), result.statusObject());
+        } else {
+            switch (checkServerJob->reply()->error()) {
+            case QNetworkReply::OperationCanceledError:
+                [[fallthrough]];
+            case QNetworkReply::TimeoutError:
+                qCWarning(lcConnectionValidator) << checkServerJob;
+                _errors.append(tr("timeout"));
+                reportResult(Timeout);
+                return;
+            case QNetworkReply::SslHandshakeFailedError:
+                reportResult(NetworkInformation::instance()->isBehindCaptivePortal() ? CaptivePortal : SslError);
+                return;
+            case QNetworkReply::TooManyRedirectsError:
+                reportResult(StatusNotFound);
+                return;
+            default:
+                break;
+            }
+
+            _account->credentials()->checkCredentials(checkServerJob->reply());
+            _errors.append(checkServerJob->errorMessage());
+            reportResult(StatusNotFound);
+        }
+    });
+}
+
+void ConnectionValidator::slotStatusFound(const QUrl &url, const QJsonObject &info)
+{
+    // status.php was found.
+    qCInfo(lcConnectionValidator) << u"** Application: OpenCloud found: " << url << u" with version " << info.value(QLatin1String("productversion")).toString();
+
+    // Update server URL in case of redirection
+    if (_account->url() != url) {
+        if (Utility::urlEqual(_account->url(), url)) {
+            qCInfo(lcConnectionValidator()) << u"status.php was redirected to" << url.toString() << u"updating the account url";
+            _account->setUrl(url);
+        } else {
+            qCInfo(lcConnectionValidator()) << u"status.php was redirected to" << url.toString() << u"asking user to accept and abort for now";
+            Q_EMIT _account->requestUrlUpdate(url);
+            reportResult(StatusNotFound);
+            return;
+        }
+    }
+
+    AbstractCredentials *creds = _account->credentials();
+    if (!creds->ready()) {
+        reportResult(CredentialsNotReady);
+        return;
+    }
+    // now check the authentication
+    if (_mode != ConnectionValidator::ValidationMode::ValidateServer) {
+        // the endpoint requires authentication
+        auto *userJob = new JsonJob(_account, _account->url(), u"graph/v1.0/me"_s, "GET", nullptr);
+        userJob->setAuthenticationJob(true);
+        userJob->setTimeout(fetchSettingsTimeout());
+        connect(userJob, &JsonApiJob::finishedSignal, this, [userJob, this] {
+            if (userJob->timedOut()) {
+                reportResult(ConnectionValidator::Timeout);
+            } else if (userJob->httpStatusCode() == 200) {
+                reportResult(ConnectionValidator::Connected);
+            } else if (userJob->httpStatusCode() == 401) {
+                reportResult(ConnectionValidator::CredentialsWrong);
+            } else if (userJob->httpStatusCode() == 503) {
+                reportResult(ConnectionValidator::ServiceUnavailable);
+            } else if (userJob->reply()->error() == QNetworkReply::SslHandshakeFailedError) {
+                reportResult(NetworkInformation::instance()->isBehindCaptivePortal() ? ConnectionValidator::CaptivePortal : ConnectionValidator::SslError);
+            } else {
+                reportResult(ConnectionValidator::Undefined);
+            }
+        });
+        userJob->start();
+        return;
+    } else {
+        reportResult(Connected);
+    }
+}
+
+void ConnectionValidator::reportResult(Status status)
+{
+    if (OC_ENSURE(!_finished)) {
+        _finished = true;
+        qCDebug(lcConnectionValidator) << status << _duration;
+        Q_EMIT connectionResult(status, _errors);
+        deleteLater();
+    }
+}
+
+} // namespace OCC

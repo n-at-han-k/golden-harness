@@ -169,6 +169,12 @@
               # Qt's headers are in qtbase's "out"; its "dev" holds only mkspecs.
               "${pkgs.qt6.qtbase}/include"
               "${pkgs.kdePackages.qtkeychain}/include"
+              # sqlite3.h, which libsync/common/syncjournaldb.cpp includes. A
+              # missing one is a FATAL diagnostic, and libclang then recovers
+              # by giving later declarations implicit `int` -- which is how the
+              # oracle came to report `QVector<QByteArray> columns;` as an
+              # integer. With it the translation unit parses with 0 errors.
+              "${pkgs.sqlite.dev}/include"
             ] ++ pkgs.lib.optional pkgs.stdenv.hostPlatform.isLinux
               "${pkgs.glibc.dev}/include")}"
 

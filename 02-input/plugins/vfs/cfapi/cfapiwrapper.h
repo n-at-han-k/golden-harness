@@ -1,0 +1,130 @@
+/*
+ * SPDX-FileCopyrightText: 2020 Nextcloud GmbH and Nextcloud contributors
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+#pragma once
+
+// include order is important, this must be included before cfapi
+#include <windows.h>
+#include <winternl.h>
+
+#include <cfapi.h>
+
+#include "common/pinstate.h"
+#include "common/result.h"
+#include "common/utility_win.h"
+#include "libsync/vfs/vfs.h"
+
+// see cloud mirror example
+#define FIELD_SIZE(type, field) (sizeof(((type *)0)->field))
+#define CF_SIZE_OF_OP_PARAM(field) (FIELD_OFFSET(CF_OPERATION_PARAMETERS, field) + FIELD_SIZE(CF_OPERATION_PARAMETERS, field))
+
+namespace OCC {
+
+class VfsCfApi;
+
+namespace CfApiWrapper {
+    struct CallBackContext
+    {
+        OCC::VfsCfApi *vfs;
+        QString path;
+        int64_t transferKey;
+        CF_CONNECTION_KEY connectionKey;
+        QByteArray fileId;
+        QMap<QByteArray, QVariant> extraArgs;
+
+        inline QString requestHexId() const { return QString::number(transferKey, 16); }
+    };
+
+    template <typename T>
+    class PlaceHolderInfo
+    {
+    public:
+        PlaceHolderInfo(const Utility::Handle &handle = {}, const std::vector<char> &&buffer = {})
+            : _handle(&handle)
+            , _data(std::move(buffer))
+        {
+        }
+
+        inline auto *get() const noexcept { return reinterpret_cast<T *>(const_cast<char *>(_data.data())); }
+        inline auto *operator->() const noexcept { return get(); }
+        inline explicit operator bool() const noexcept { return isValid(); }
+        inline bool isValid() const noexcept { return !_data.empty(); };
+
+        inline auto size() const { return _data.size(); }
+
+        inline QByteArray fileId() const
+        {
+            if (get()->FileIdentityLength == 0) {
+                return {};
+            }
+            // the file id increases the struct size, ensure we fetched the whole dynamic struct
+            Q_ASSERT(size() > (sizeof(T) + 20));
+            return QByteArray(reinterpret_cast<char *>(get()->FileIdentity), get()->FileIdentityLength);
+        }
+
+        PinState pinState() const
+        {
+            Q_ASSERT(this);
+            switch (get()->PinState) {
+            case CF_PIN_STATE_UNSPECIFIED:
+                return OCC::PinState::Unspecified;
+            case CF_PIN_STATE_PINNED:
+                return OCC::PinState::AlwaysLocal;
+            case CF_PIN_STATE_UNPINNED:
+                return OCC::PinState::OnlineOnly;
+            case CF_PIN_STATE_INHERIT:
+                return OCC::PinState::Inherited;
+            case CF_PIN_STATE_EXCLUDED:
+                return OCC::PinState::Excluded;
+            }
+            Q_UNREACHABLE();
+        }
+
+        const Utility::Handle &handle() const { return *_handle; }
+
+    private:
+        const Utility::Handle *_handle;
+        std::vector<char> _data;
+    };
+
+    void registerSyncRoot(const VfsSetupParams &params, const std::function<void(QString)> &callback);
+    // void unregisterSyncRootShellExtensions(const QString &providerName, const QString &folderAlias, const QString &accountDisplayName);
+    Result<void, QString> unregisterSyncRoot(const VfsSetupParams &params);
+
+    Result<CF_CONNECTION_KEY, QString> connectSyncRoot(const std::filesystem::path &path, VfsCfApi *context);
+    Result<void, QString> disconnectSyncRoot(CF_CONNECTION_KEY &&key);
+
+    bool isDehydratedPlaceholder(const FileSystem::Path &path);
+
+    /**
+     * The placeholder info can have a dynamic size, by default we don't query FileIdentity
+     * If FileIdentity is required withFileIdentity must be set to true.
+     */
+    template <typename T>
+    PlaceHolderInfo<T> findPlaceholderInfo(const Utility::Handle &handle, bool withFileIdentity = false)
+    {
+    }
+
+    template <>
+    PlaceHolderInfo<CF_PLACEHOLDER_BASIC_INFO> findPlaceholderInfo(const Utility::Handle &handle, bool withFileIdentity);
+
+    template <>
+    PlaceHolderInfo<CF_PLACEHOLDER_STANDARD_INFO> findPlaceholderInfo(const Utility::Handle &handle, bool withFileIdentity);
+
+    enum SetPinRecurseMode { NoRecurse = 0, Recurse, ChildrenOnly };
+
+    Result<OCC::Vfs::ConvertToPlaceholderResult, QString> setPinState(const Utility::Handle &handle, PinState state, SetPinRecurseMode mode);
+    Result<void, QString> createPlaceholderInfo(const std::filesystem::path &path, time_t modtime, qint64 size, const QByteArray &fileId, bool isDirectory);
+    Result<OCC::Vfs::ConvertToPlaceholderResult, QString> updatePlaceholderInfo(
+        const Utility::Handle &handle, time_t modtime, qint64 size, const QByteArray &fileId, const std::filesystem::path &replacesPath, bool isHydrated);
+    Result<OCC::Vfs::ConvertToPlaceholderResult, QString> convertToPlaceholder(
+        const Utility::Handle &handle, time_t modtime, qint64 size, const QByteArray &fileId, const std::filesystem::path &replacesPath);
+    Result<OCC::Vfs::ConvertToPlaceholderResult, QString> dehydratePlaceholder(const Utility::Handle &handle, const QByteArray &fileId);
+    Result<OCC::Vfs::ConvertToPlaceholderResult, QString> updatePlaceholderMarkInSync(const Utility::Handle &handle);
+    bool isPlaceHolderInSync(const Utility::Handle &handle);
+}
+
+} // namespace OCC
+
+QDebug operator<<(QDebug debug, const OCC::CfApiWrapper::CallBackContext &context);

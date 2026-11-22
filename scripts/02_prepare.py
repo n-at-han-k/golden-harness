@@ -34,6 +34,106 @@ PLATFORM_OFF = {"Q_OS_WIN", "Q_OS_WIN32", "Q_OS_WINDOWS", "_WIN32", "_WIN64",
                 "_MSC_VER", "OPENCLOUD_HAVE_CFAPI"}
 
 
+DEFINE = re.compile(
+    r'^[ \t]*#[ \t]*define[ \t]+(?P<name>[A-Za-z_]\w*)'
+    r'(?:\((?P<params>[^)]*)\))?[ \t]*(?P<body>.*)$')
+
+
+def split_args(text: str) -> list[str]:
+    """Top-level comma split, so a nested call or paren stays in one argument."""
+    out, depth, current = [], 0, ''
+    for char in text:
+        if char in '([':
+            depth += 1
+        elif char in ')]':
+            depth -= 1
+        if char == ',' and depth == 0:
+            out.append(current.strip())
+            current = ''
+            continue
+        current += char
+    out.append(current.strip())
+    return [a for a in out if a != '']
+
+
+def call_span(text: str, start: int) -> tuple[int, str] | None:
+    """The argument list beginning at `start`, which must be its `(`."""
+    if start >= len(text) or text[start] != '(':
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == '(':
+            depth += 1
+        elif text[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return i + 1, text[start + 1:i]
+    return None
+
+
+def expand_macros(source: str) -> str:
+    """Expand this file's own #define macros, then drop their definitions.
+
+    The preprocessor is the only thing that can do this: neither tree-sitter
+    nor ast-grep expands a macro, so `IS_PREFIX_PATH_OF("?1", "path")` reaches
+    the emitter as a call to something that does not exist and the Ruby does
+    not parse. Qt's own macros are handled above and are left alone here.
+
+    Object-like and function-like forms only, which is all this tree uses. The
+    bodies are C string concatenation (`"(" path " > ("  ...`), and adjacent
+    literals are left adjacent: the C++ grammar gives them as one
+    concatenated_string and the emitter joins them.
+    """
+    macros: dict[str, tuple[list[str], str]] = {}
+    kept: list[str] = []
+    for line in source.split('\n'):
+        m = DEFINE.match(line)
+        if m and not line.rstrip().endswith('\\'):
+            params = split_args(m.group('params')) if m.group('params') is not None else []
+            macros[m.group('name')] = (params, m.group('body').strip())
+            continue
+        kept.append(line)
+    if not macros:
+        return source
+
+    text = '\n'.join(kept)
+    for _ in range(8):                     # nested macros; this tree needs 2
+        changed = False
+        for name, (params, body) in macros.items():
+            pattern = re.compile(r'\b' + re.escape(name) + r'\b')
+            out, at = '', 0
+            for m in pattern.finditer(text):
+                if m.start() < at:
+                    continue
+                out += text[at:m.start()]
+                if not params:
+                    out += body
+                    at = m.end()
+                    changed = True
+                    continue
+                span = call_span(text, m.end())
+                if span is None:
+                    out += m.group(0)
+                    at = m.end()
+                    continue
+                end, inner = span
+                args = split_args(inner)
+                if len(args) != len(params):
+                    out += text[m.start():end]
+                    at = end
+                    continue
+                expanded = body
+                for param, value in zip(params, args):
+                    expanded = re.sub(r'\b' + re.escape(param) + r'\b', lambda _, v=value: v, expanded)
+                out += expanded
+                at = end
+                changed = True
+            text = out + text[at:]
+        if not changed:
+            break
+    return text
+
+
 def quote(text: str) -> str:
     return text.replace('\\', '\\\\').replace('"', '\\"')
 
@@ -91,6 +191,7 @@ def resolve_conditionals(lines: list[str]) -> list[str]:
 
 def convert(source: str) -> str:
     source = "\n".join(resolve_conditionals(source.split("\n")))
+    source = expand_macros(source)
     source = QOBJECT_HOIST.sub(
         lambda m: '{}[[{}]] {}'.format(m.group('head'), m.group('macro').lower(),
                                        m.group('rest')),
