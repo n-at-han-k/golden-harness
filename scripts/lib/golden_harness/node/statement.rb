@@ -5,6 +5,11 @@ module GoldenHarness
     ASSERTIONS = %w[OC_ASSERT OC_ASSERT_X OC_ENFORCE OC_ENFORCE_X Q_ASSERT Q_ASSERT_X].freeze
     UNREACHABLE = %w[Q_UNREACHABLE OC_UNREACHABLE].freeze
 
+    # `Q_UNUSED(x)` tells the C++ compiler not to warn. Ruby has no equivalent
+    # and needs none: dropping it leaves the parameter unused, and rubocop's
+    # Lint/UnusedMethodArgument renames it to `_x`, which is the golden's form.
+    DROPPED = %w[Q_UNUSED].freeze
+
     # A map whose `[]` default-constructs, which is what lets the C++
     # `entries[k].field = v` work on an absent key. A bare `{}` returns nil and
     # raises, so the block form is required rather than cosmetic.
@@ -251,9 +256,6 @@ module GoldenHarness
       def assign(name, value)
         return [Local(name, Nil_())] if value.nil?
 
-        # `x = (a == b);` -- the parens group nothing once it is an assignment,
-        # and the golden drops them, as it does for a `return`.
-        value = @cst.named(value).first || value if value.kind == "parenthesized_expression"
 
         reduced = iife_value(value)
         return [Local(name, reduced)] if reduced
@@ -293,11 +295,14 @@ module GoldenHarness
         return [expr(inner)].compact if inner.kind == "update_expression"
 
         deferred = []
+        before = []
         @pending_updates = deferred
+        @pending_before = before
         built = expression_statement_body(node, inner)
         @pending_updates = nil
+        @pending_before = nil
 
-        built + deferred
+        before + built + deferred
       end
 
       def expression_statement_body(node, inner)
@@ -308,6 +313,7 @@ module GoldenHarness
             text = @cst.text(name)
             return [Unless(assert_condition(call), Raise())] if ASSERTIONS.include?(text)
             return [Raise()] if UNREACHABLE.include?(text)
+            return [] if DROPPED.include?(text)
           end
         end
 

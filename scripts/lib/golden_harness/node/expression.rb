@@ -130,7 +130,13 @@ module GoldenHarness
       def qualified(node)
         segments = @cst.text(node).split("::")
         last = segments.last
-        return Sym(snake(last)) if last.match?(/\A[A-Z][A-Za-z0-9]*\z/)
+        # Downcased as well as snaked: `NONE` has no case boundary for snake
+        # to split on, and `:NONE` is not what a symbol looks like.
+        return Sym(snake(last).downcase) if last.match?(/\A[A-Z][A-Za-z0-9]*\z/)
+        # A scoped enum constant, whatever its case: the oracle knows
+        # `CheckSums::Algorithm::PARSE_ERROR` is one, and being scoped is what
+        # separates it from a bare `CSYNC_INSTRUCTION_NEW` macro constant.
+        return Sym(last.downcase) if @facts.scoped_enum?(last)
         return Lvar(@cst.text(node)) unless segments.first.match?(/\A[A-Z]/)
 
         Call(ConstPath(segments[0..-2].join("::")), snake(last))
@@ -142,8 +148,23 @@ module GoldenHarness
       # that marked it as a member goes; it is only kept on a bare mention,
       # where it becomes the `@`.
       def field_access(node)
-        receiver = expr(@cst.field(node, :argument))
-        Call(receiver, member(@cst.field(node, :field)))
+        argument = @cst.field(node, :argument)
+        field = @cst.field(node, :field)
+        # Inside a rewritten `operator==`: the left operand is the receiver, so
+        # its members are ivars, and the right one is the argument.
+        if argument.kind == "identifier" && @operator_lhs
+          text = @cst.text(argument)
+          return Ivar(snake(@cst.text(field).sub(/\A_/, ""))) if text == @operator_lhs
+          return Call(Lvar(:other), member(field)) if text == @operator_rhs
+        end
+        # `this->_db` is this object's own member, which is the ivar; reaching
+        # it through `self` is a C++ necessity, not a Ruby one.
+        # `const_cast<SyncJournalDb *>(this)->_db` -- the cast is dropped, so
+        # the receiver is reached THROUGH it and the node is not a bare `this`.
+        return Ivar(snake(@cst.text(field).sub(/\A_/, ""))) if
+          @cst.dig?(argument, "this") && @cst.text(field).start_with?("_")
+
+        Call(expr(argument), member(field))
       end
 
       def member(field) = @cst.text(field).sub(/\A_/, "")
@@ -159,11 +180,16 @@ module GoldenHarness
                                  member(@cst.field(fn, :field)), node, args)
         end
 
+        # `int(type)` / `bool(x)` -- a functional cast, which is not a
+        # conversion in Ruby any more than `static_cast` is.
+        return args.first if fn.kind == "primitive_type" && args.one?
+
         if fn.kind == "identifier"
           text = @cst.text(fn)
           return args.first if CASTS.include?(text) && args.one?
           return Str("") if LITERAL_WRAPPERS.include?(text) && args.empty?
-          if @facts.callable?(@function, local_name(text), @method_name)
+          if @facts.callable?(@function, text, @method_name) ||
+             @facts.callable?(@function, local_name(text), @method_name)
             return send_with_block(Lvar(local_name(text)), :call, node, args)
           end
           # `ChecksumHeader(type, sum)` / `QFileInfo(path)` -- a constructor
@@ -235,7 +261,41 @@ module GoldenHarness
         list = @cst.field(node, :arguments)
         return [] if list.nil?
 
-        @cst.named(list).filter_map { expr(_1) }
+        last = @cst.last_named(list)
+        @cst.named(list).filter_map do |argument|
+          # Compared by POSITION. tree-sitter hands back a fresh wrapper object
+          # for every lookup, so `equal?` is never true and a trailing lambda
+          # was being hoisted instead of becoming the block it should be.
+          trailing = last && argument.start_byte == last.start_byte
+          next hoist_lambda(node, argument) if
+            argument.kind == "lambda_expression" && !trailing
+
+          expr(argument)
+        end
+      end
+
+      # A lambda passed anywhere but LAST cannot be a block, and inline it
+      # buries the arguments that follow it. Bound to a local above the
+      # statement instead, which is what the golden writes:
+      #
+      #   parent_hash = lambda do |ctx, _, argv| ... end
+      #   sqlite3_create_function(@db.sqlite_db, "parent_hash", 1, ..., parent_hash, ...)
+      #
+      # Named after the call's own string literal, which is what the thing
+      # being registered is called -- there is nothing else in the source to
+      # name it after.
+      def hoist_lambda(node, argument)
+        name = lambda_name(node)
+        (@pending_before || []) << Local(name, expr(argument))
+        Lvar(name)
+      end
+
+      def lambda_name(node)
+        literal = @cst.named(@cst.field(node, :arguments))
+                      .find { %w[string_literal concatenated_string].include?(_1.kind) }
+        return "callback" if literal.nil?
+
+        snake(string_value(@cst.named(literal).first || literal).gsub(/[^A-Za-z0-9_]/, "_"))
       end
 
       def binary(node)
@@ -272,9 +332,7 @@ module GoldenHarness
 
       def assignment(node)
         target = @cst.field(node, :left)
-        right = @cst.field(node, :right)
-        right = @cst.named(right).first || right if right.kind == "parenthesized_expression"
-        value = expr(right)
+        value = expr(@cst.field(node, :right))
         operator = @cst.text(@cst.field(node, :operator))
         return compound_assign(target, operator, value) unless operator == "="
 

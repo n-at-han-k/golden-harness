@@ -135,9 +135,15 @@ module GoldenHarness
 
       # A literal contributes its text; anything else is interpolated.
       def part(node)
-        return Str(string_value(node)) if %w[string_literal raw_string_literal].include?(node.kind)
-
         inner = node.kind == "parenthesized_expression" ? @cst.named(node).first : node
+        inner = @cst.field(inner, @ternary_branch[inner.start_byte]) if
+          inner.kind == "conditional_expression" && @ternary_branch.key?(inner.start_byte)
+        # A literal contributes its TEXT, wherever it came from -- including
+        # from a ternary branch, which is a string in
+        # `<< (startTrans ? "and starting new transaction" : "")`. Interpolating
+        # it instead gives `#{"and starting new transaction"}`.
+        return Str(string_value(inner)) if %w[string_literal raw_string_literal].include?(inner.kind)
+
         Interp(expr(inner))
       end
 

@@ -80,7 +80,17 @@ module RuboCop
         #       (@query_server != :parent_not_changed && !server_entry.is_valid) ||
         #       (@query_server == :parent_not_changed && !db_entry.is_valid)
         #     )
+        # `return a && b && c` past the width, wrapped the same way an
+        # assignment is -- the golden writes the `operator==` bodies that way.
+        def on_return(node)
+          value = node.children.first
+          return if value.nil?
+
+          wrap_value(node, value)
+        end
+
         def on_lvasgn(node)
+          drop_value_parens(node, node.expression)
           wrap_value(node, node.expression)
         end
         alias on_ivasgn on_lvasgn
@@ -97,6 +107,23 @@ module RuboCop
         end
 
         private
+
+        # The same for an assigned value: `x = (a == b)` -> `x = a == b`.
+        #
+        # Only a SHORT one. A long parenthesised value is what rule 4 wraps,
+        # and its parens are what make the wrapped form parse -- the golden has
+        # `@metadata_table_is_empty = get_file_record_count == 0` without them
+        # and `modified_on_server = (item.instruction & (...))` with them, and
+        # width is what separates the two.
+        def drop_value_parens(node, value)
+          return if value.nil? || value.multiline?
+          return unless value.begin_type? && value.children.one?
+          return if value.source.length >= MIN_WIDTH
+
+          add_offense(value, message: MSG_REDUNDANT) do |corrector|
+            corrector.replace(value, value.children.first.source)
+          end
+        end
 
         # Rule 3: `if (a == b)` -> `if a == b`.
         #
@@ -138,7 +165,32 @@ module RuboCop
           return false if condition.nil? || !boolean?(condition)
           return false if canonical?(condition)
 
-          condition.multiline? || condition.source.length >= MIN_WIDTH
+          condition.multiline? || condition.source.length >= MIN_WIDTH ||
+            grouped?(condition)
+        end
+
+        # A condition with a parenthesised boolean sub-group in it, which the
+        # golden wraps however short the whole thing is:
+        #
+        #   if (
+        #     major == 1 &&
+        #     minor == 8 &&
+        #     (
+        #       patch == 0 ||
+        #       patch == 1
+        #     )
+        #   )
+        #
+        # 53 columns, and wrapped; a 58-column chain with no group beside it is
+        # left inline. The author's grouping is information, and once it is
+        # worth writing down it is worth seeing.
+        def grouped?(condition)
+          operands(unwrap(condition)).any? do |operand|
+            next false unless operand.respond_to?(:begin_type?) && operand.begin_type?
+
+            inner = unwrap(operand)
+            inner.and_type? || inner.or_type?
+          end
         end
 
         # Already in the form rule 1 produces.
@@ -166,9 +218,26 @@ module RuboCop
         def wrap_condition(node)
           condition = node.condition
           return if condition.nil? || !boolean?(condition)
-          return unless condition.multiline? || condition.source.length >= MIN_WIDTH
+          return unless wrappable?(condition) || canonical?(condition)
 
-          target = rewritten(node, condition)
+          # Whether the GROUP is why this wrapped. A short condition wraps only
+          # because it holds a parenthesised boolean, so that group is the point
+          # and it opens out whatever its width:
+          #
+          #   if (                        if (
+          #     major == 1 &&               job.http_status_code == 404 ||
+          #     minor == 8 &&               (job.etag != base.etag && !item.is_directory) ||
+          #     (                           @discovery_data.is_renamed(original_path)
+          #       patch == 0 ||           )
+          #       patch == 1
+          #     )
+          #   )
+          #
+          # 53 columns flat on the left and the 26-column group expanded; 124
+          # on the right and the 45-column group left alone. Width alone cannot
+          # separate those -- it would have to expand the smaller and keep the
+          # larger -- but which rule did the wrapping can.
+          target = rewritten(node, condition, force_nested: flat(condition).length < MIN_WIDTH)
           return if condition.source == target
 
           add_offense(condition) do |corrector|
@@ -258,10 +327,24 @@ module RuboCop
           out
         end
 
-        def rewritten(node, condition, expand_inner: true)
+        def rewritten(node, condition, expand_inner: true, force_nested: false)
           indent = node.source_range.source_line[/\A[ \t]*/]
-          inner = render(unwrap(condition), "#{indent}  ", expand_inner: expand_inner)
+          inner = render(unwrap(condition), "#{indent}  ",
+                         expand_inner: expand_inner, force_nested: force_nested)
           "(\n#{inner}\n#{indent})"
+        end
+
+        # The condition on one line, so a measurement of it does not change
+        # once this cop has wrapped it.
+        #
+        # The spaces just inside a paren are squeezed out as well. Without
+        # that, flattening `(\n  patch == 0 ||\n  patch == 1\n)` left
+        # `( patch == 0 || patch == 1 )` -- four columns wider than the source
+        # ever was -- which pushed a 58-column condition over the 60 limit on
+        # alternate passes, so the cop expanded the group, collapsed it,
+        # expanded it again, and rubocop stopped on whichever came last.
+        def flat(node)
+          node.source.gsub(/\s*\n\s*/, " ").gsub(/\(\s+/, "(").gsub(/\s+\)/, ")")
         end
 
         # One operand per line at `indent`. A parenthesised operand that is
@@ -296,13 +379,13 @@ module RuboCop
         # wrapped conditions) and keeps one inline inside an ASSIGNMENT value
         # -- `no_server_entry = ((a && b) || (c && d))` stays two lines -- so
         # the caller passes what it is.
-        def render(node, indent, expand_inner: true)
+        def render(node, indent, expand_inner: true, force_nested: false)
           operands(node).each_slice(2).map do |operand, operator|
             tail = operator ? " #{operator}" : ""
             inner = unwrap(operand)
             if expand_inner && operand.begin_type? &&
                (inner.and_type? || inner.or_type?) &&
-               operand.source.length >= NEST_WIDTH
+               (force_nested || flat(operand).length >= NEST_WIDTH)
               # Every level opens out, not just the first. The golden
               # contradicts itself here -- the same shape
               # `X && ((a && b) || (c && d))` is expanded at one site and left

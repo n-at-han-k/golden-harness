@@ -37,6 +37,9 @@ module GoldenHarness
       @method_name = nil
       @class_name = nil
       @pending_updates = nil
+      @pending_before = nil
+      @operator_lhs = nil
+      @operator_rhs = nil
       @ternary_branch = {}
     end
 
@@ -185,7 +188,44 @@ module GoldenHarness
       # anonymous namespace, which `namespace` handles structurally. The fact
       # is recorded either way; placement does not use it.
       def function(node)
+        operator = operator_equality(node)
+        return operator if operator
+
         [method(node)].compact
+      end
+
+      # A free `operator==(const T &lhs, const T &rhs)` is T's own `==`.
+      #
+      #   bool operator==(const SyncJournalDb::DownloadInfo &lhs,
+      #                   const SyncJournalDb::DownloadInfo &rhs)
+      #
+      # becomes `class DownloadInfo / def ==(other)`, because in Ruby equality
+      # is a method on the left operand: `lhs` is the receiver and its members
+      # are ivars, `rhs` is the argument. C++ has to write it as a free
+      # function to get the symmetry; Ruby does not.
+      def operator_equality(node)
+        declarator = @cst.dig(node, "function_declarator", field: :declarator)
+        return nil if declarator.nil?
+
+        name = @cst.dig(declarator, "operator_name", field: :declarator) ||
+               @cst.child(declarator, "operator_name")
+        return nil if name.nil? || @cst.text(name) != "operator=="
+
+        parameters = @cst.named(@cst.field(declarator, :parameters))
+        return nil unless parameters.size == 2
+
+        type = @cst.dig(parameters.first, "type_identifier")
+        return nil if type.nil?
+
+        @operator_lhs = @cst.text(@cst.dig(parameters[0], "identifier", field: :declarator))
+        @operator_rhs = @cst.text(@cst.dig(parameters[1], "identifier", field: :declarator))
+        @function = node
+        body = Body(statements_of(@cst.field(node, :body)))
+        @function = nil
+        @operator_lhs = nil
+        @operator_rhs = nil
+
+        [Class_(@cst.text(type), Def("==", ["other"], body))]
       end
 
       # `void A::f(a, b) { ... }` -> `def f(a, b)`.
@@ -202,8 +242,8 @@ module GoldenHarness
         @function = nil
         @method_name = nil
 
-        # A constructor is `initialize`, whatever the class is called.
-        Def(name == @class_name ? "initialize" : name, parameters(declarator), Body(statements))
+        Def(ruby_method_name(name, declarator),
+            parameters(declarator, @cst.field(node, :body)), Body(statements))
       end
 
       # The member initialiser list, which runs before the body.
@@ -233,6 +273,16 @@ module GoldenHarness
         end
       end
 
+      # A constructor is `initialize`; a destructor is `finalize`, which is the
+      # name Ruby gives the hook that runs when an object goes away. Both are
+      # spelled with the class's own name in C++, and the `~` is the only thing
+      # that tells them apart.
+      def ruby_method_name(name, declarator)
+        return name unless name == @class_name
+
+        @cst.dig?(declarator, "destructor_name") ? "finalize" : "initialize"
+      end
+
       def method_name(declarator)
         qualified = @cst.dig(declarator, "qualified_identifier", field: :declarator)
         return @cst.text(@cst.dig(qualified, "identifier")) if qualified
@@ -241,16 +291,32 @@ module GoldenHarness
         plain && snake(@cst.text(plain))
       end
 
-      def parameters(declarator)
+      def parameters(declarator, body = nil)
         list = @cst.field(declarator, :parameters)
         @cst.named(list).filter_map do |param|
           case param.kind
           when "parameter_declaration"
             name = @cst.dig(param, "identifier", field: :declarator)
-            name ? @cst.text(name) : "_"
+            next "_" if name.nil?
+
+            unused?(body, @cst.text(name)) ? "_#{@cst.text(name)}" : @cst.text(name)
           when "variadic_parameter_declaration"
             "*#{@cst.text(@cst.dig(param, "identifier", field: :declarator))}"
           end
+        end
+      end
+
+      # A parameter the body never mentions.
+      #
+      # Ruby marks one with a leading underscore, and `Q_UNUSED(x)` -- which
+      # 02_prepare.py leaves and the emitter drops -- is the C++ saying the
+      # same thing. rubocop reports this as Lint/UnusedMethodArgument but will
+      # not correct it under `-A`, so it is done here.
+      def unused?(body, name)
+        return false if body.nil?
+
+        @cst.descendants(body).none? do |node|
+          %w[identifier field_identifier].include?(node.kind) && @cst.text(node) == name
         end
       end
 

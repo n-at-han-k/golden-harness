@@ -41,6 +41,12 @@ module GoldenHarness
     # translation unit does not include: a class appears as a RECEIVER
     # somewhere -- a `::` scope, a callee, the left of a `.` -- and an enum
     # value never does.
+    # The last segment of a QUALIFIED name, where case carries no information:
+    # `CheckSums::Algorithm::PARSE_ERROR` is an enum constant and becomes
+    # `:parse_error`, while a bare `CSYNC_INSTRUCTION_NEW` stays a constant.
+    # Being scoped is what marks the first as an enum rather than a macro.
+    def scoped_enum?(name) = !enum_constants[name].nil?
+
     def enum_value?(name)
       # PascalCase only. That is the shape an enum constant takes here, and it
       # is the only shape that is AMBIGUOUS -- a lowercase name is a local, and

@@ -210,6 +210,15 @@ visit(translation_unit.cursor, facts) do |cursor|
     scope = enclosing_function(cursor)
     next unless cursor.location.from_main_file? || scope.nil?
 
+    scope_name = enclosing_function(cursor)
+    if scope_name && cursor.kind == :cursor_variable
+      # Recorded before the shape test: a lambda's type has no shape -- its
+      # spelling is `(lambda at ...)` -- but `_exec` is still a local, and that
+      # is what decides whether its underscore becomes an `@`.
+      facts["locals"] << "#{snake(scope_name)}::#{snake(name)}"
+      facts["locals"] << "#{snake(scope_name)}::#{snake(name.sub(/\A_/, ""))}"
+    end
+
     shape = shape_of(cursor.type)
     next if shape.nil?
 
@@ -221,12 +230,6 @@ visit(translation_unit.cursor, facts) do |cursor|
     # A LOCAL, as against a member of the class. `_exec` is a local lambda and
     # the golden drops its underscore; `_dbFile` is a member and keeps it as
     # the `@`. Nothing in the spelling tells them apart.
-    if scope && cursor.kind == :cursor_variable
-      # Both spellings. A local written `_exec` loses the underscore in the
-      # Ruby, so that is the name the emitter looks it up by.
-      facts["locals"] << "#{snake(scope)}::#{snake(name)}"
-      facts["locals"] << "#{snake(scope)}::#{snake(name.sub(/\A_/, ""))}"
-    end
     facts["integers"] << snake(name) if shape == "int"
   end
 end
