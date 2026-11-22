@@ -30,6 +30,15 @@ module GoldenHarness
       @source.byteslice(from, to - from).dup.force_encoding(Encoding::UTF_8)
     end
 
+    # The source line a node starts on, counted from the bytes before it.
+    # What it is for: the author's line breaks inside a `<<` chain, which are
+    # the only record of how they grouped a long message.
+    def line(node)
+      return 0 if node.nil?
+
+      @source.byteslice(0, node.start_byte).count("\n")
+    end
+
     def named(node)
       return [] if node.nil?
 

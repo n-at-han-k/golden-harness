@@ -42,6 +42,11 @@ module GoldenHarness
     # somewhere -- a `::` scope, a callee, the left of a `.` -- and an enum
     # value never does.
     def enum_value?(name)
+      # PascalCase only. That is the shape an enum constant takes here, and it
+      # is the only shape that is AMBIGUOUS -- a lowercase name is a local, and
+      # asking the oracle about one invites a false positive, because some
+      # header in the tree does declare an enum constant called `async`.
+      return false unless name.match?(/\A[A-Z]/)
       return false unless name.match?(/[a-z]/)
 
       known = enum_constants[name]

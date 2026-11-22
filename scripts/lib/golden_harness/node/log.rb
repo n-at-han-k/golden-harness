@@ -50,10 +50,62 @@ module GoldenHarness
       # the result out.
       def log(node)
         head = log_head(node)
-        level = log_level(head)
-        category = log_category(head)
-        message = Dstr(merge(operands(node).drop(1).flat_map { [Str(" "), part(_1)] }.drop(1)))
-        CallBlock(Call(Const(:Log), level, Str(category)), [], message)
+        call = Call(Const(:Log), log_level(head), Str(log_category(head)))
+        CallBlock(call, [], log_body(node))
+      end
+
+      # A ternary among the operands duplicates the MESSAGE, not the statement:
+      # the golden keeps one `Log.info(...)` whose block body is an `if`, with
+      # a whole message in each branch. Statement-level duplication is right
+      # for a call argument and wrong here, so the lift happens at this level.
+      def log_body(node)
+        found = ternary_operand(node)
+        return message(node) if found.nil?
+
+        @ternary_branch[found.start_byte] = :consequence
+        consequence = message(node)
+        @ternary_branch[found.start_byte] = :alternative
+        alternative = message(node)
+        @ternary_branch.delete(found.start_byte)
+
+        If(expr(@cst.field(found, :condition)), consequence, alternative)
+      end
+
+      def ternary_operand(node)
+        operands(node).drop(1).each do |operand|
+          found = @cst.dig(operand, "conditional_expression")
+          return found if found && !@ternary_branch.key?(found.start_byte)
+        end
+        nil
+      end
+
+      # The message, grouped the way the C++ author laid the chain out.
+      #
+      # One Ruby string literal per source line, which Ruby concatenates --
+      # `parser` keeps them as nested `dstr` nodes, so the grouping survives
+      # into the AST rather than being lost to layout. Transpile/MultilineString
+      # puts the breaks back in.
+      def message(node)
+        groups = []
+        line = nil
+        operands(node).drop(1).each do |operand|
+          at = @cst.line(operand)
+          fresh = line.nil? || at != line
+          groups << [] if fresh
+          # QDebug writes a space between the operands it is handed, so one is
+          # inserted between them -- but NOT across a line break, where the
+          # literal the author wrote already starts with its own space. The
+          # golden's continuation reads `" | valid: "`, with one space, not two.
+          groups.last << Str(" ") unless fresh
+          groups.last << part(operand)
+          line = at
+        end
+
+        parts = groups.reject(&:empty?).map { Dstr(merge(_1)) }
+        return Str("") if parts.empty?
+        return parts.first if parts.one?
+
+        Dstr(parts)
       end
 
       def log_level(head)

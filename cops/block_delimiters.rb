@@ -35,12 +35,16 @@ module RuboCop
       class BlockDelimiters < Base
         extend AutoCorrector
 
-        MSG = 'Use `do ... end` for a multi-line block.'
+        MSG = 'Use `do ... end` for a block run for its effect.'
+
+        ASSIGNMENTS = %i[lvasgn ivasgn cvasgn gvasgn casgn op_asgn or_asgn and_asgn
+                         masgn indexasgn].freeze
 
         def on_block(node)
           return unless node.multiline?
           return unless node.braces?
           return if inside_condition?(node)
+          return if value_block?(node)
 
           add_offense(node) do |corrector|
             corrector.replace(node.loc.begin, 'do')
@@ -49,6 +53,31 @@ module RuboCop
         end
 
         private
+
+          # A block whose whole purpose is the value it evaluates to keeps its
+          # braces however many lines it spans. The golden writes
+          #
+          #   Log.info("sync.discovery") {
+          #     if server_entry.is_directory
+          #       "..."
+          #     else
+          #       "..."
+          #     end
+          #   }
+          #
+          # with braces, and the `.each`/`Hash.new` blocks beside it with
+          # `do ... end`. Line count does not separate those; what the block is
+          # FOR does, and it is the same test SingleLineBlock applies.
+          def value_block?(node)
+            return false unless node.arguments.empty?
+
+            body = node.body
+            return false if body.nil? || body.begin_type?
+            return false if ASSIGNMENTS.include?(body.type)
+            return false if body.send_type? && body.assignment_method?
+
+            true
+          end
 
           # A block sitting in an `if`/`while`/`until` condition keeps its
           # braces, which is what the golden writes.

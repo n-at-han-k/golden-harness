@@ -34,6 +34,9 @@ module GoldenHarness
       end
 
       def lift_ternary(node)
+        # A log statement duplicates its MESSAGE instead; see log_body.
+        return nil if log_statement?(node)
+
         found = first_ternary(node)
         return nil if found.nil?
 
@@ -44,6 +47,13 @@ module GoldenHarness
         @ternary_branch.delete(found.start_byte)
 
         [If(expr(@cst.field(found, :condition)), Body(consequence), Body(alternative))]
+      end
+
+      def log_statement?(node)
+        return false unless node.kind == "expression_statement"
+
+        inner = @cst.named(node).first
+        !inner.nil? && log_chain?(inner)
       end
 
       # The first ternary this statement owns. One inside a nested lambda

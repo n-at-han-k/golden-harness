@@ -150,19 +150,16 @@ module GoldenHarness
         scope && @cst.text(scope)
       end
 
-      # A definition, placed by its LINKAGE. One with internal linkage is
-      # private to the translation unit, so it is held back for the `private`
-      # section rather than emitted in source position.
+      # A definition, in source position.
+      #
+      # NOT placed by linkage. The oracle knows which functions have internal
+      # linkage -- a `static` free function as much as one in an anonymous
+      # namespace -- but the golden keeps a `static` helper public and in
+      # place (`compute_local_checksum`), and reserves `private` for the
+      # anonymous namespace, which `namespace` handles structurally. The fact
+      # is recorded either way; placement does not use it.
       def function(node)
-        built = method(node)
-        return [] if built.nil?
-
-        if @facts.internal?(built.children.first.to_s)
-          @private_members << built
-          return []
-        end
-
-        [built]
+        [method(node)].compact
       end
 
       # `void A::f(a, b) { ... }` -> `def f(a, b)`.

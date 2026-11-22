@@ -22,10 +22,16 @@ module GoldenHarness
 
     # A C++ local may be named for a Ruby keyword -- syncjournaldb has one
     # called `end` -- and then it cannot keep the name.
+    #
+    # `nil`, `true` and `false` are deliberately absent: they arrive as
+    # identifiers (03_simplify.yml's s-empty-if-body writes `nil;` into the
+    # C++) but they are LITERALS, handled below, not names to be renamed.
     RESERVED = %w[
-      end begin class def do else elsif ensure for if in module next nil not or and
-      redo rescue retry return self super then true false undef unless until when while yield alias
+      end begin class def do else elsif ensure for if in module next not or and
+      redo rescue retry return super then undef unless until when while yield alias
     ].freeze
+
+    LITERALS = { "nil" => :Nil_, "true" => :True_, "false" => :False_ }.freeze
 
     private
 
@@ -50,7 +56,9 @@ module GoldenHarness
         when "true" then True_()
         when "false" then False_()
         when "null", "nullptr" then Nil_()
-        when "this" then Self_()
+        # The golden writes `this`, not `self`: a Qt parent/receiver argument
+        # is carried across as the C++ spells it.
+        when "this" then Lvar(:this)
         when "lambda_expression" then lambda_node(node)
         when "new_expression" then new_object(node)
         when "compound_literal_expression" then brace_init(node)
@@ -67,6 +75,8 @@ module GoldenHarness
       # that says so -- 03_simplify.yml keeps it for exactly this reason.
       # A PascalCase name that is never a receiver is an enum value.
       def name_node(text)
+        literal = LITERALS[text]
+        return send(literal) if literal
         return Ivar(snake(text.sub(/\A_/, ""))) if text.start_with?("_")
         return Sym(snake(text)) if @facts.enum_value?(text)
         return Const(text) if text.match?(/\A[A-Z]/)
@@ -353,8 +363,17 @@ module GoldenHarness
       # escapes the backslashes again and `"\\:?*\""` comes out doubled.
       def string_value(node)
         text = @cst.text(node).sub(/\A[uUL]?8?R?"/, "").sub(/"\z/, "")
-        unescape(text)
+        arrows(unescape(text))
       end
+
+      # `u" -> "` becomes `" . "`.
+      #
+      # Inside a string an arrow is text, not an operator, so this is not a
+      # member access being rewritten -- but the golden carries it, because
+      # 03_rubyify.py replaced `->` with `.` across the whole file, string
+      # literals included. Reproduced here deliberately: the golden is the
+      # specification. Delete this one call to stop doing it.
+      def arrows(text) = text.gsub("->", ".")
 
       ESCAPES = {
         "n" => "\n", "t" => "\t", "r" => "\r", "0" => "\0",

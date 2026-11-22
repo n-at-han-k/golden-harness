@@ -14,6 +14,7 @@ require:
   - ./cops/blank_line_between_statements.rb
   - ./cops/single_line_arguments.rb
   - ./cops/single_line_block.rb
+  - ./cops/multiline_string.rb
   - ./cops/block_delimiters.rb
   - ./cops/no_blank_line_before_branch.rb
   - ./cops/disable_syntax_ternary_autocorrect.rb
@@ -248,6 +249,13 @@ Transpile/SingleLineBlock:
   Description: >-
     Join a value-producing block onto one line. Unparser lays every block out
     across lines; the golden keeps a log-message block inline.
+
+Transpile/MultilineString:
+  Enabled: true
+  Description: >-
+    Put each adjacent string literal on its own line, joined by a backslash.
+    The grouping is the C++ author's line breaks inside a `<<` chain; unparser
+    writes them on one line.
 
 Transpile/BlockDelimiters:
   Enabled: true

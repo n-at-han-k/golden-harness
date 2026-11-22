@@ -1,4 +1,6 @@
 tmp/
-03-output/
+03-output/**/*
+!03-output
+!03-output/.keep
 node_modules/
 refs/
