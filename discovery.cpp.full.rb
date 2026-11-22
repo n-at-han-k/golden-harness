@@ -725,8 +725,10 @@ module OCC
             item.type = :item_type_virtual_file_dehydration
           elsif (
             !server_modified &&
-            db_entry.inode != local_entry.inode ||
-            @discovery_data.sync_options.vfs.needs_metadata_update(*item)
+            (
+              db_entry.inode != local_entry.inode ||
+              @discovery_data.sync_options.vfs.needs_metadata_update(item)
+            )
           )
             item.set_instruction(CSYNC_INSTRUCTION_UPDATE_METADATA)
             item.direction = :down
@@ -861,8 +863,10 @@ module OCC
         if (
           !local_entry.is_directory &&
           !base.is_virtual_file &&
-          base.modtime != local_entry.modtime ||
-          base.size != local_entry.size
+          (
+            base.modtime != local_entry.modtime ||
+            base.size != local_entry.size
+          )
         )
           Log.info("sync.discovery") {
             "Not a move, mtime or size differs,  modtime: #{base.modtime} #{local_entry.modtime} ,  size:" \
@@ -1138,8 +1142,10 @@ module OCC
       else
         if (
           removed ||
-          item.type == :item_type_virtual_file &&
-          item.instruction == CSYNC_INSTRUCTION_NEW
+          (
+            item.type == :item_type_virtual_file &&
+            item.instruction == CSYNC_INSTRUCTION_NEW
+          )
         )
           @discovery_data.deleted_item[path.original] = item
         end
@@ -1251,7 +1257,7 @@ module OCC
 
         if (
           forbidden_it != @discovery_data.forbidden_deletes.cend &&
-          file_slash.starts_with(*forbidden_it)
+          file_slash.starts_with(forbidden_it)
         )
           item.set_instruction(CSYNC_INSTRUCTION_NEW)
           item.direction = :down
@@ -1437,7 +1443,7 @@ module OCC
         @pending_async_jobs -= 1
 
         if results
-          @server_normal_query_entries = *results
+          @server_normal_query_entries = results
           @server_query_done = true
 
           if @local_query_done
@@ -1543,7 +1549,7 @@ module OCC
         state = @discovery_data.sync_options.vfs.pin_state(@current_folder.local)
 
         if state
-          @pin_state = *state
+          @pin_state = state
         end
       end
     end

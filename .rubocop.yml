@@ -1,34 +1,22 @@
-# The golden harness's rubocop config.
-#
-# It INHERITS the repo's base config, which is where the plugins and the house
-# style live -- `rubocop-nathank`, `rubocop-disable_syntax` and the
-# Style/DisableSyntax ban on ternaries among them. An earlier version of this
-# file redefined everything from scratch and so silently dropped all of that;
-# the base is the authority and only the harness-specific additions belong
-# here.
 inherit_from:
   - ../.rubocop.yml
   - .rubocop-cops.yml
 
-# `rubocop -A` is the pipeline's last pass and the same pass runs over the
-# golden, so both sides are laid out identically and the diff shows substance
-# only. These are the settings that serve THAT job and nothing else.
+require:
+  - ./cops/multiline_struct_new.rb
+  - ./cops/multiline_condition.rb
+  - ./cops/blank_line_between_statements.rb
+  - ./cops/single_line_arguments.rb
+  - ./cops/no_blank_line_before_branch.rb
 
-# The generator emits one statement per line already; leave long lines alone
-# rather than have rubocop wrap transliterated C++ expressions at arbitrary
-# points.
 Layout/LineLength:
   Enabled: false
 
-# Not formatting: this inserts a magic comment that changes string semantics,
-# and it shifts every line so the golden diff reports a whole-file mismatch.
 Style/FrozenStringLiteralComment:
   Enabled: false
 Layout/EmptyLineAfterMagicComment:
   Enabled: false
 
-# Generated blocks arrive with blank lines where braces and access specifiers
-# were removed; collapsing them is exactly what is wanted for the golden diff.
 Layout/EmptyLines:
   Enabled: true
 Layout/TrailingEmptyLines:
@@ -43,9 +31,6 @@ Layout/EmptyLinesAroundBlockBody:
   Enabled: true
 Layout/EmptyLineBetweenDefs:
   Enabled: true
-
-# Alignment the generated output needs normalising on. The base sets
-# IndentationWidth and IndentationConsistency; these are the rest.
 Layout/ArgumentAlignment:
   Enabled: true
   EnforcedStyle: with_fixed_indentation
@@ -102,17 +87,6 @@ Layout/EmptyLinesAroundAccessModifier:
   Enabled: true
 Layout/LineEndStringConcatenationIndentation:
   Enabled: true
-
-# EmptyLineAfterMultilineCondition is OFF. It puts a blank line between a
-# wrapped `if (...)` and its body; the golden runs the body straight on from
-# the closing paren:
-#
-#     if (
-#       !@discovery_data.should_discover_locally(@current_folder.local) &&
-#       ...
-#     )
-#       @query_local = :parent_not_changed
-#     end
 Layout/EmptyLineAfterMultilineCondition:
   Enabled: false
 Layout/EmptyLineAfterGuardClause:
@@ -129,29 +103,44 @@ Layout/EmptyLinesAroundAttributeAccessor:
   Enabled: true
 Layout/EmptyComment:
   Enabled: true
-
-# The golden puts a multiline block's `{` on its own line:
-#
-#     Log.info("sync.discovery") {
-#       "Processing ..." \
-#       " | valid: ..."
-#     }
 Layout/MultilineBlockLayout:
   Enabled: true
 
-# `scripts/rules/simplify.yml`'s s-brace-else-if normalises an `else if` chain
-# to `else { if ... }` -- pure C++, so every later rule keeps working, and the
-# emitter then needs no chain-aware rewriter (which would cost one rewriter
-# tier per link of the chain). That lands as
-#
-#     else
-#       if c
-#         ...
-#       end
-#     end
-#
-# and Style/IfInsideElse collapses it to `elsif c`, which is what Ruby and the
-# golden spell. Flattening is a styling question, so it belongs here rather
-# than in the rules.
 Style/IfInsideElse:
   Enabled: true
+
+Transpile/MultilineStructNew:
+  Enabled: true
+  Description: Lay out Struct.new with one member per line, as the golden does.
+
+Transpile/MultilineCondition:
+  Enabled: true
+  Description: >-
+    Wrap a long boolean condition in parentheses, one operand per line. The
+    built-in Layout cops re-indent existing breaks but never introduce them, so
+    a long transliterated condition would otherwise stay on one line.
+
+Transpile/BlankLineBetweenStatements:
+  Enabled: true
+  Description: >-
+    Separate a multi-line statement from the next with a blank line. Confirmed
+    against `rubocop --show-cops` that no built-in covers this: the
+    EmptyLinesAround*Body family handles the inside of a body,
+    EmptyLineAfterMultilineCondition the condition/body gap, and
+    EmptyLineAfterGuardClause only guard clauses.
+
+Transpile/SingleLineArguments:
+  Enabled: true
+  Description: >-
+    Join a wrapped argument list onto one line. The break is an artefact of the
+    C++ source. No built-in does this: Layout/LineLength is the only cop that
+    moves code between lines and it only splits, and it is disabled here
+    because it would wrap transliterated expressions arbitrarily.
+
+Transpile/NoBlankLineBeforeBranch:
+  Enabled: true
+  Description: >-
+    Remove a blank line left at the end of a body, immediately before the
+    `else`, `elsif` or `end` that closes it. The EmptyLinesAround* family each
+    handle one specific kind of body and none of them reaches the branches of
+    an `if` or a `case`.

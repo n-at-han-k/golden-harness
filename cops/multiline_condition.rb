@@ -47,12 +47,14 @@ module RuboCop
         # picks, both sides get the same treatment.
         MIN_WIDTH = 60
 
-        # A nested parenthesised group is ALWAYS expanded, with no width
-        # threshold. The golden cannot be fitted with one: it expands a
-        # 60-character group -- `(local_entry.is_valid || @query_local ==
-        # :parent_not_changed)` -- while keeping a 62-character one inline.
-        # Measured both ways over the full file, always expanding agrees with
-        # it on 21 more lines than a threshold of 80 does.
+        # An inner parenthesised group inside a CONDITION is expanded only
+        # once its inline form reaches this width. Measured over every such
+        # group in the golden: the nine expanded ones are 61, 61, 107, 107,
+        # 114, 117, 120, 121 and 135 characters, and the single inline one is
+        # 45, so anything in 46..60 separates them. An assignment value never
+        # expands its groups (60, 64 and 65, all inline), which is what
+        # `expand_inner` carries.
+        NEST_WIDTH = 50
 
         # An unwrapped first line past this width gets a blank before the body.
         LONG_FIRST_LINE = 120
@@ -244,6 +246,30 @@ module RuboCop
         # One operand per line at `indent`. A parenthesised operand that is
         # itself a boolean chain is laid out the same way, one level deeper,
         # which is what reproduces the golden's nesting.
+        # An operand's source with the parentheses removed when they wrap a
+        # single operand and so group nothing: the golden writes
+        # `local_entry.is_directory`, not `(local_entry.is_directory)`.
+        def unparenthesise(operand)
+          source = operand.source.gsub(/\s*\n\s*/, " ")
+          return source unless operand.begin_type? && operand.children.one?
+
+          inner = operand.children.first
+          return source if inner.and_type? || inner.or_type?
+
+          inner.source.gsub(/\s*\n\s*/, " ")
+        end
+
+        # The boolean chain inside `!( ... )`, or nil if the operand is not that.
+        def negated_group(operand)
+          return nil unless operand.send_type? && operand.method?(:!)
+
+          receiver = operand.receiver
+          return nil unless receiver&.begin_type?
+
+          inner = unwrap(receiver)
+          (inner.and_type? || inner.or_type?) ? inner : nil
+        end
+
         # `expand_inner` decides whether a parenthesised sub-group is itself
         # broken up. The golden expands one inside a CONDITION (6 of its 7
         # wrapped conditions) and keeps one inline inside an ASSIGNMENT value
@@ -254,11 +280,19 @@ module RuboCop
             tail = operator ? " #{operator}" : ""
             inner = unwrap(operand)
             if expand_inner && operand.begin_type? &&
-               (inner.and_type? || inner.or_type?)
+               (inner.and_type? || inner.or_type?) &&
+               operand.source.length >= NEST_WIDTH
               nested = render(inner, "#{indent}  ", expand_inner: expand_inner)
               "#{indent}(\n#{nested}\n#{indent})#{tail}"
+            elsif expand_inner && (negated = negated_group(operand))
+              # `!(a && b && c)` -- the `!` stays on the opening paren and the
+              # group inside is laid out like any other. Treating the whole
+              # negation as one opaque operand left it on a single long line
+              # where the golden breaks it up.
+              nested = render(negated, "#{indent}  ", expand_inner: expand_inner)
+              "#{indent}!(\n#{nested}\n#{indent})#{tail}"
             else
-              "#{indent}#{operand.source.gsub(/\s*\n\s*/, ' ')}#{tail}"
+              "#{indent}#{unparenthesise(operand)}#{tail}"
             end
           end.join("\n")
         end

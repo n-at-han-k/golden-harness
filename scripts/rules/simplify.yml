@@ -775,3 +775,72 @@ rule:
                   - has: { field: alternative, pattern: $AE }
 fix: |-
   if ($AC) { $AN = $AT; } else { $AN = $AE; }
+---
+# A pointer dereference loses its `*`: `needsMetadataUpdate(*item)` -> `(item)`.
+#
+# Ruby has no dereference, and `*item` there is a SPLAT -- it expands the
+# receiver into an argument list, which is not what the C++ means and is a
+# silent change of behaviour, not just noise. Four sites in discovery.cpp.
+#
+# `pointer_expression` with a `*` is exactly the dereference: multiplication is
+# a binary_expression and a pointer TYPE is a pointer_declarator, so neither is
+# reachable from here. Address-of shares this node kind, hence the regex.
+id: s-deref
+language: cpp
+severity: hint
+rule:
+  kind: pointer_expression
+  regex: '^\*'
+  has: { field: argument, pattern: $DRV }
+fix: "$DRV"
+---
+# A ternary in ARGUMENT position: the statement is emitted once per branch.
+#
+#     item->setInstruction(isConflict ? A : B);
+#
+# becomes
+#
+#     if (isConflict) { item->setInstruction(A); }
+#     else            { item->setInstruction(B); }
+#
+# s-ternary-decl and s-ternary-assign only reach a ternary that IS the assigned
+# value; there is nowhere to put an `if` when the ternary sits inside a call, so
+# the whole statement is duplicated instead with the ternary replaced by each
+# side.
+#
+# The duplication is done by rewriters rather than by text surgery: t-then and
+# t-else each rewrite a conditional_expression to one of its branches, and the
+# rest of the statement -- the call, the other arguments -- is preserved
+# because neither rewriter matches it and no `joinBy` is used.
+#
+# `inside: { kind: argument_list, stopBy: end }` is what keeps this disjoint
+# from the assignment rules, so the two can never contend for the same node.
+id: s-ternary-arg
+language: cpp
+severity: hint
+rule:
+  kind: expression_statement
+  pattern: $STMT
+  has:
+    stopBy: end
+    kind: conditional_expression
+    inside: { kind: argument_list, stopBy: end }
+    has: { field: condition, pattern: $TAC }
+rewriters:
+  - id: t-then
+    rule:
+      kind: conditional_expression
+      has: { field: consequence, pattern: $TTT }
+    fix: "$TTT"
+  - id: t-else
+    rule:
+      kind: conditional_expression
+      has: { field: alternative, pattern: $TEE }
+    fix: "$TEE"
+transform:
+  THEN:
+    rewrite: { rewriters: [t-then], source: $STMT }
+  ELSE:
+    rewrite: { rewriters: [t-else], source: $STMT }
+fix: |-
+  if ($TAC) { $THEN } else { $ELSE }
