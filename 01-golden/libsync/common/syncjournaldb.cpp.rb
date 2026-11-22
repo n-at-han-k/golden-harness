@@ -37,6 +37,8 @@ require "sqlite3"
 
 require "cstring"
 
+include Qt::Literals::StringLiterals
+
 module OCC
   class SyncJournalDb
     SQLITE_IOERR_SHMMAP = SQLITE_IOERR | (21 << 8)
@@ -46,18 +48,6 @@ module OCC
       @transaction = 0
       @metadata_table_is_empty = false
       @journal_mode = default_journal_mode(@db_file)
-    end
-
-    def get_p_hash(file)
-      h = nil
-      len = file.length
-      h = c_jhash64(file.data, len, 0)
-
-      return h
-    end
-
-    def default_journal_mode(_db_path)
-      return "WAL"
     end
 
     def make_db_name(local_path, infix)
@@ -2238,5 +2228,19 @@ module OCC
         )
       end
     end
+
+    private
+
+      def get_p_hash(file)
+        h = nil
+        len = file.length
+        h = c_jhash64(file.data, len, 0)
+
+        return h
+      end
+
+      def default_journal_mode(_db_path)
+        return "WAL"
+      end
   end
 end
