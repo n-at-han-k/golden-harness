@@ -1636,7 +1636,7 @@ def main() -> int:
              .replace("STMT1_NOSTRUCT", tier1_nostruct)
              .replace("STMT1", tier1))
     out = HEADER + tiers + decls + FOOTER
-    target = HERE / "07_07_transform.yml"
+    target = HERE / "07_transform.yml"
     target.write_text(out)
     rewriters = out.count("\n  - id: ")
     print(f"wrote {target.relative_to(HERE.parent)} "

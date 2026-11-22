@@ -98,13 +98,28 @@ def run_rubocop() -> None:
     run(["bundle", "exec", "rubocop", "-A", "-c", ".rubocop.yml", "tmp/work"], check=False)
 
 
+CPP_EXTS = {".h", ".hpp", ".cpp", ".cc", ".cxx"}
+
+
+def work_name(name: str) -> str:
+    p = pathlib.Path(name)
+    if p.suffix in CPP_EXTS:
+        return name
+    # handle names like discovery.cpp.full -> discovery.cpp
+    if p.suffix == ".full" and pathlib.Path(p.stem).suffix in CPP_EXTS:
+        return p.stem
+    return name
+
+
 def pipeline(src: pathlib.Path) -> pathlib.Path:
     rel = rel_for_input(src)
     basename = src.name
+    staged_name = work_name(basename)
+    staged_rel = rel.parent / staged_name
     if TMP.exists():
         shutil.rmtree(TMP)
-    (WORK / rel.parent).mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, WORK / rel)
+    (WORK / staged_rel.parent).mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, WORK / staged_rel)
 
     run(["python3", "scripts/01_build_transform.py"])
     run(["python3", "scripts/02_prepare.py", "tmp/work", "tmp/work"])
@@ -116,10 +131,8 @@ def pipeline(src: pathlib.Path) -> pathlib.Path:
     run(["python3", "scripts/03_rubyify.py", "tmp/work", "tmp/work"])
     run_rubocop()
 
-    produced = WORK / rel.parent / (pathlib.Path(basename).name + ".rb")
-    # rubyify/ast-grep transform may emit .rb next to input name; be flexible
+    produced = WORK / staged_rel.parent / (staged_name + ".rb")
     if not produced.exists():
-        # common case: foo.cpp -> foo.cpp.rb or foo.rb depending; search
         cands = sorted(WORK.rglob("*.rb"))
         if len(cands) == 1:
             produced = cands[0]
