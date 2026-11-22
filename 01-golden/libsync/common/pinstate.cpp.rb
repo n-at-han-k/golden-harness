@@ -20,7 +20,7 @@ require "qcoreapplication"
 
 include OCC
 
-class Utility
+module Utility
   def enum_to_display_name(availability)
     case availability
     when :always_local

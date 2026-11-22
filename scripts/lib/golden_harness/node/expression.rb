@@ -97,6 +97,18 @@ module GoldenHarness
       def parenthesized(node)
         inner = @cst.named(node).first
         return expr(inner) if inner && @condition_targets.include?(inner.start_byte)
+        # The parens are `s-ternary`'s own -- its fix writes `($C ? $T : $E)`
+        # so that the rule terminates. Once the statement has been lifted into
+        # an `if`, only one branch is left and the parens group nothing:
+        # `is_child_path_of(p.path, (info.file_path))`.
+        return expr(inner) if inner && @ternary_branch.key?(inner.start_byte)
+        # `startsWith(*(--it))` -- the parens are the C++ author's, needed
+        # there to bind the dereference. As a Ruby ARGUMENT they group nothing:
+        # the golden writes `path.starts_with(it -= 1)`.
+        if inner && @cst.parent?(node, "argument_list") &&
+           %w[update_expression assignment_expression].include?(inner.kind)
+          return expr(inner)
+        end
 
         Paren(expr(inner))
       end
@@ -211,6 +223,18 @@ module GoldenHarness
                                  member(@cst.field(fn, :field)), node, args)
         end
 
+        # An IMMEDIATELY-INVOKED lambda: `Q_ASSERT([&]{ ... }())`,
+        # `SyncFileItemPtr([]{ ... }())`. Written where it stands, with no name
+        # invented for it:
+        #
+        #   unless (lambda { true }).call
+        #     raise
+        #   end
+        #
+        # The parens are load-bearing -- unparser adds none -- and without them
+        # `.call` would bind to the block's last expression.
+        return Call(Paren(expr(fn)), :call) if fn.kind == "lambda_expression" && args.empty?
+
         # `int(type)` / `bool(x)` -- a functional cast, which is not a
         # conversion in Ruby any more than `static_cast` is.
         return args.first if fn.kind == "primitive_type" && args.one?
@@ -222,7 +246,8 @@ module GoldenHarness
           return args.first if args.one? && @facts.scalar_type?(text)
           return Str("") if LITERAL_WRAPPERS.include?(text) && args.empty?
           if @facts.callable?(@function, text, @method_name) ||
-             @facts.callable?(@function, local_name(text), @method_name)
+             @facts.callable?(@function, local_name(text), @method_name) ||
+             parameter?(node, text)
             return send_with_block(Lvar(local_name(text)), :call, node, args)
           end
           # `ChecksumHeader(type, sum)` / `QFileInfo(path)` -- a CONSTRUCTOR,
@@ -257,11 +282,15 @@ module GoldenHarness
         return template_function(fn, node, args) if fn.kind == "template_function"
 
         if fn.kind == "qualified_identifier"
-          segments = @cst.text(fn).split("::")
+          # The template arguments go first. `std::foo(a)` is valid Ruby -- it
+          # reads as `foo` on whatever `std` returns -- but
+          # `std::numeric_limits<qint64>::max()` is not, and one unparsable
+          # line stops rubocop correcting anything else in the file.
+          segments = @cst.text(fn).gsub(/<[^<>]*>/, "").split("::")
           # `std::filesystem::directory_entry(...)` -- a namespaced free
           # function. Ruby has no namespace, so the name is kept whole rather
           # than turned into a receiver it does not have.
-          return send_with_block(nil, @cst.text(fn), node, args) unless segments.first.match?(/\A[A-Z]/)
+          return send_with_block(nil, segments.join("::"), node, args) unless segments.first.match?(/\A[A-Z]/)
           return send_with_block(nil, segments.last, node, args) if segments.one?
 
           return send_with_block(ConstPath(segments[0..-2].join("::")), snake(segments.last), node, args)
@@ -294,10 +323,13 @@ module GoldenHarness
       end
 
       def template_call(fn, name, args)
-        argument = @cst.dig(fn, "type_identifier", field: :arguments)
-        return Call(nil, name, *args) if argument.nil?
+        arguments = @cst.field(fn, :arguments)
+        argument = arguments && @cst.named(arguments).first
+        return Call(nil, snake(name), *args) if argument.nil?
 
-        Binary(Binary(Lvar(name), :<, Const(@cst.text(argument))), :>, Paren(args.first))
+        # The argument's WHOLE text: `SyncFileItem::Status` is a qualified
+        # name, and digging for a `type_identifier` inside it found `Status`.
+        Binary(Binary(Lvar(snake(name)), :<, Const(@cst.text(argument))), :>, Paren(args.first))
       end
 
       STRING_NODES = %w[string_literal raw_string_literal concatenated_string].freeze
@@ -357,10 +389,42 @@ module GoldenHarness
       # A trailing lambda argument is Ruby's block. Unparser then decides
       # `do ... end` or braces, and the two parse to the same tree, so the
       # choice cannot change what the code means.
+      # A name that is a PARAMETER of an enclosing function or lambda, used
+      # here as the callee.
+      #
+      # `[](auto &c, const auto &pred) { ... pred(*i) ... }` -- the type is
+      # `auto`, so the oracle has nothing to say, but C++ only lets `pred(...)`
+      # compile if it is callable, and in Ruby a parameter is never a method.
+      # So the call has to be `pred.call(...)`, which is what the golden has.
+      def parameter?(node, name)
+        at = node.parent
+        while at
+          if %w[function_definition lambda_expression function_declarator].include?(at.kind)
+            list = @cst.field(at, :parameters) || @cst.field(at, :declarator)
+            return true if list && parameter_names(list).include?(name)
+          end
+          at = at.parent
+        end
+        false
+      end
+
+      def parameter_names(list)
+        @cst.descendants(list).filter_map do |kid|
+          @cst.text(kid) if kid.kind == "identifier" && kid.parent &&
+                            %w[parameter_declaration optional_parameter_declaration
+                               variadic_parameter_declaration].include?(kid.parent.kind)
+        end
+      end
+
       def send_with_block(receiver, name, node, args)
         list = @cst.field(node, :arguments)
         last = @cst.last_named(list)
-        if last && last.kind == "lambda_expression"
+        # `block_taking?` has the say. `call_arguments` has already HOISTED the
+        # lambda where a block is wrong -- `erase_if.call(@sync_items, pred)`
+        # passes it as an argument, because `erase_if` is a lambda of our own
+        # and `.call` takes no block in the golden -- and attaching it here as
+        # well emitted the body twice.
+        if last && last.kind == "lambda_expression" && block_taking?(node)
           head = args[0...-1]
           return CallBlock(Call(receiver, name, *head), lambda_params(last),
                            Body(statements_of(@cst.field(last, :body))))
@@ -379,6 +443,11 @@ module GoldenHarness
           # for every lookup, so `equal?` is never true and a trailing lambda
           # was being hoisted instead of becoming the block it should be.
           trailing = last && argument.start_byte == last.start_byte
+          # Not a block, so it is an ordinary argument. `hoist_lambda` decides
+          # whether the call names it -- `sqlite3_create_function(..,
+          # "parent_hash", .., <lambda>, ..)` and `connect(this,
+          # &Folder::syncFinished, this, <lambda>, ..)` both do -- and writes
+          # it inline where nothing does.
           next hoist_lambda(node, argument) if
             argument.kind == "lambda_expression" && !(trailing && blockable)
 
@@ -416,11 +485,23 @@ module GoldenHarness
       #   sqlite3_create_function(@db.sqlite_db, "parent_hash", 1, ..., parent_hash, ...)
       #
       # Named after the call's own string literal, which is what the thing
-      # being registered is called -- there is nothing else in the source to
-      # name it after.
+      # being registered is called. Where the call offers no such name, the
+      # lambda stays inline -- see `hoist_lambda`.
+      def connect?(node)
+        fn = @cst.field(node, :function)
+        !fn.nil? && @cst.text(fn).split("::").last == "connect"
+      end
+
+      # Bound to a local only when the SOURCE names it. Where it does not, the
+      # lambda is written inline, like an immediately-invoked one -- the
+      # alternative was inventing a name, and an invented name is not a
+      # transliteration of anything.
       def hoist_lambda(node, argument)
         name = lambda_name(node)
-        (@pending_before || []) << Local(name, expr(argument))
+        return expr(argument) if name.nil?
+
+        target = @pending_before || []
+        target << Local(name, expr(argument))
         Lvar(name)
       end
 
@@ -438,9 +519,17 @@ module GoldenHarness
         # A signal, not a flag: `Qt::QueuedConnection` is qualified too, and
         # what tells them apart is that a signal's own name is a method and so
         # begins lowercase.
+        # Only for `connect`. The qualified-name test is a SIGNAL test, and
+        # `std::remove_if(first, last, <lambda>)` has `Utility::asKeyValueRange`
+        # among the lambda's own calls, which named it `on_as_key_value_range`.
+        #
+        # `nil` rather than a fallback: nothing in the source names this
+        # lambda, so it is written where it stands instead.
+        return nil unless connect?(node)
+
         signal = arguments.filter_map { @cst.dig(_1, "qualified_identifier") }
                           .find { @cst.text(_1).split("::").last.match?(/\A[a-z]/) }
-        return "callback" if signal.nil?
+        return nil if signal.nil?
 
         "on_#{snake(@cst.text(signal).split("::").last)}"
       end

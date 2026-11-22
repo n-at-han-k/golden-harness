@@ -73,7 +73,10 @@ CONTAINERS = {
   "QSet" => "set", "set" => "set", "std::set" => "set",
   "QMap" => "hash", "QHash" => "hash", "map" => "hash",
   "unordered_map" => "hash", "std::map" => "hash",
-  "QString" => "string", "QByteArray" => "string", "std::string" => "string"
+  "QString" => "string", "QByteArray" => "string", "std::string" => "string",
+  # A view over a string is a string in Ruby: `QStringView ref;` is `ref = ""`.
+  "QStringView" => "string", "QByteArrayView" => "string",
+  "QLatin1String" => "string", "QLatin1StringView" => "string"
 }.freeze
 
 INTEGRAL = %i[

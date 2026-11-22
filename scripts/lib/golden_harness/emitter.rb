@@ -46,6 +46,7 @@ module GoldenHarness
 
     def emit
       body = program
+      body = sends_for_free_names(body) unless body.nil?
       ruby = body.nil? ? "" : Unparser.unparse(body)
       [prologue, ruby].reject(&:empty?).join("\n") + "\n"
     end
@@ -299,6 +300,7 @@ module GoldenHarness
         end
 
         blocks.map do |(scope, members)|
+          members = order_members(members)
           next Body(members) if scope.nil? || scope == :none
 
           # `OCC::operator<<(...)` is qualified with a NAMESPACE, not a class,
@@ -319,6 +321,18 @@ module GoldenHarness
         @hoisted << [scope, member]
       end
 
+      # `Layout/ClassStructure`'s order, applied here because its own
+      # autocorrect moves the def but writes `end    def parse_checksum_header`
+      # -- unparsable, which stops every other cop in the run. Constants open
+      # the class, then the initializer, then everything else in source order.
+      def order_members(members)
+        constants, rest = members.partition { _1.type == :casgn }
+        initializer, others = rest.partition { initializer?(_1) }
+        constants + initializer + others
+      end
+
+      def initializer?(node) = node.type == :def && node.children.first == :initialize
+
       # `Layout/ClassStructure` puts `initializer` ahead of `public_methods`,
       # which is the order csync_exclude's golden has -- the anonymous
       # namespace is written first in the C++ and `initialize` still comes
@@ -328,15 +342,29 @@ module GoldenHarness
       def after_initializer(methods, members)
         return members if methods.empty?
 
-        at = members.index { _1.type == :def && _1.children.first == :initialize }
+        at = members.index { initializer?(_1) }
         at ? members[0..at] + methods + members[(at + 1)..] : methods + members
       end
 
       def definition_scope(node)
         declarator = @cst.dig(node, "function_declarator", field: :declarator)
         qualified = declarator && @cst.dig(declarator, "qualified_identifier", field: :declarator)
-        scope = qualified && @cst.field(qualified, :scope)
+        scope = qualified && @cst.field(innermost(qualified), :scope)
         scope ? @cst.text(scope) : nil
+      end
+
+      # The LAST qualifier before the name.
+      #
+      # `void OCC::SyncEngine::slotItemDiscovered(...)` nests one
+      # qualified_identifier inside another, and reading the outer one's scope
+      # gave `OCC` -- the namespace, not the class. The method then opened a
+      # second block of its own and the class came out split in two.
+      def innermost(qualified)
+        at = qualified
+        while (inner = @cst.child(at, "qualified_identifier", field: :name))
+          at = inner
+        end
+        at
       end
 
       # The class these definitions belong to.
@@ -351,7 +379,7 @@ module GoldenHarness
 
           declarator = @cst.dig(node, "function_declarator", field: :declarator)
           qualified = declarator && @cst.dig(declarator, "qualified_identifier", field: :declarator)
-          scope = qualified && @cst.field(qualified, :scope)
+          scope = qualified && @cst.field(innermost(qualified), :scope)
           return @cst.text(scope) if scope
         end
         nil
@@ -469,7 +497,14 @@ module GoldenHarness
 
         @function = node
         @method_name = name
-        statements = field_initializers(node) + statements_of(@cst.field(node, :body))
+        # A member initialiser can hoist: `PropagateRootDirectory` builds its
+        # root item with an immediately-invoked lambda and passes it to
+        # `super`, and the binding has to land before the `super` line.
+        before = []
+        @pending_before = before
+        initialisers = field_initializers(node)
+        @pending_before = nil
+        statements = before + initialisers + statements_of(@cst.field(node, :body))
         @function = nil
         @method_name = nil
 
@@ -484,6 +519,27 @@ module GoldenHarness
       # becomes `super(parent)` followed by one assignment per member, in the
       # order the C++ writes them. The base-class entry is the one whose name
       # is a type rather than a member, which is what PascalCase marks.
+      # What a member initialiser initialises the member TO.
+      #
+      # `_subJobs(propagator, path)` CONSTRUCTS a PropagatorCompositeJob -- the
+      # declared type is the only thing that says so, and taking the first
+      # argument left `@sub_jobs = propagator`, which is a different object.
+      #
+      # Only with MORE THAN ONE argument. A single one is the value itself:
+      # `_account(account)` holds a QSharedPointer and the golden writes
+      # `@account = account`, not `QSharedPointer.new(account)`.
+      def member_value(member, values)
+        return values.first unless values.size > 1
+
+        shape = @facts.shape(member) || @facts.shape("_#{member}")
+        # The oracle spells the type as libclang sees it, namespace included.
+        # Inside `module OCC` the golden writes `PropagatorCompositeJob.new`.
+        type = shape.to_s[/\Aobject:(.+)\z/, 1]&.split("::")&.last
+        return Call(ConstPath(type), :new, *values) if type
+
+        values.first
+      end
+
       def field_initializers(node)
         list = @cst.child(node, "field_initializer_list")
         return [] if list.nil?
@@ -498,7 +554,8 @@ module GoldenHarness
           if text.match?(/\A[A-Z]/)
             Super(*values)
           else
-            IvarSet(snake(text.sub(/\A_/, "")), values.first)
+            member = snake(text.sub(/\A_/, ""))
+            IvarSet(member, member_value(member, values))
           end
         end
       end
@@ -533,12 +590,43 @@ module GoldenHarness
         tail ? "#{name}_with_#{snake(@cst.text(tail))}" : "#{name}_#{count}"
       end
 
+      # The C++ operators Ruby spells the same way, plus the two it does not.
+      #
+      # A MEMBER operator -- `bool Capabilities::operator==(const Capabilities
+      # &other) const` -- has an `operator_name` where a method has an
+      # identifier, so `method_name` returned nothing and the emitter wrote
+      # `def (other)`. That does not parse, so rubocop corrected nothing in the
+      # file. The free two-argument form is `operator_equality`'s instead,
+      # because there the left operand has to become the receiver.
+      OPERATORS = {
+        "operator==" => "==", "operator!=" => "!=", "operator<" => "<",
+        "operator>" => ">", "operator<=" => "<=", "operator>=" => ">=",
+        "operator+" => "+", "operator-" => "-", "operator*" => "*",
+        "operator/" => "/", "operator%" => "%", "operator[]" => "[]",
+        "operator<=>" => "<=>", "operator!" => "!", "operator()" => "call",
+        "operator<<" => "<<", "operator bool" => "truthy?"
+      }.freeze
+
       def method_name(declarator)
         qualified = @cst.dig(declarator, "qualified_identifier", field: :declarator)
-        return @cst.text(@cst.dig(qualified, "identifier")) if qualified
+        if qualified
+          name = @cst.dig(qualified, "identifier")
+          return @cst.text(name) if name
+
+          operator = @cst.dig(qualified, "operator_name")
+          return operator_name(operator) if operator
+        end
+
+        operator = @cst.child(declarator, "operator_name", field: :declarator)
+        return operator_name(operator) if operator
 
         plain = @cst.dig(declarator, "identifier", "field_identifier", field: :declarator)
         plain && snake(@cst.text(plain))
+      end
+
+      def operator_name(node)
+        text = @cst.text(node).gsub(/\s+/, " ").strip
+        OPERATORS.fetch(text) { snake(text.sub(/\Aoperator\s*/, "")) }
       end
 
       def parameters(declarator, definition = nil)
@@ -634,6 +722,25 @@ module GoldenHarness
       # unparser writes the braces, giving `Struct.new(:a, { keyword_init: true })`.
       # `constexpr int retrySyncLimitC = 3;` at namespace scope -> a constant on
       # the class, named the way Ruby names one.
+      # The parens around a constant's value group nothing once it is an
+      # assignment, and the golden drops them -- `MINIMUM_FILE_AGE_FOR_UPLOAD =
+      # 2`, from `SyncEngine::minimumFileAgeForUpload(2s)`.
+      def ungrouped(value)
+        inner = value && @cst.named(value).first
+        case value&.kind
+        # `seconds SyncEngine::minimumFileAgeForUpload(2s)` initialises with a
+        # constructor's argument list, not with an `=`, and the list is the
+        # init_declarator's `value`. Emitting it whole gave
+        # `MINIMUM_FILE_AGE_FOR_UPLOAD = (2)`.
+        when "argument_list" then @cst.named(value).one? ? inner : value
+        # A LONE literal only: `GET_MAX_BLACKLIST_TIME = (24 * 3600)` keeps its
+        # parens in the golden.
+        when "parenthesized_expression"
+          inner && inner.kind.end_with?("_literal") ? inner : value
+        else value
+        end
+      end
+
       def namespace_constant(node)
         init = @cst.child(node, "init_declarator", field: :declarator)
         name = init && @cst.dig(init, "identifier")
@@ -642,7 +749,7 @@ module GoldenHarness
         return [] if orphaned?(@cst.text(name))
 
         @constants << @cst.text(name)
-        [Constant(snake(@cst.text(name)).upcase, expr(value))]
+        [Constant(snake(@cst.text(name)).upcase, expr(ungrouped(value)))]
       end
 
       def kwarg(key, value) = n(:kwargs, n(:pair, Sym(key), value))

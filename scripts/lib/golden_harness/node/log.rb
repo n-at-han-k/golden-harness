@@ -132,7 +132,10 @@ module GoldenHarness
         arg = @cst.named(@cst.field(head, :arguments)).first
         return "" if arg.nil?
 
-        text = @cst.text(arg)
+        # `qCWarning(lcEngine())` names the category through its accessor, so
+        # the parens are part of the argument's text and the lookup missed --
+        # the category came out as the literal string `lcEngine()`.
+        text = @cst.text(arg).sub(/\(\s*\)\z/, "")
         @facts.category(text) || text
       end
 

@@ -232,15 +232,11 @@ module OCC
     def response_timestamp
       return @response_timestamp
     end
-  end
 
-  class OCC
     def response_q_time_stamp
       return Utility.parse_rfc1123_date(QString.from_utf8(response_timestamp))
     end
-  end
 
-  class AbstractNetworkJob
     def request_id
       if @reply
         return @reply.request.raw_header("X-Request-ID")
@@ -277,7 +273,7 @@ module OCC
       extra = extract_error_message(reply_body)
 
       if !extra.is_empty && !reply.has_raw_header("OC-ErrorString")
-        return "#{base()} (#{extra()})"
+        return "#{base} (#{extra})"
       end
 
       return base
@@ -348,7 +344,7 @@ module OCC
       extra = extract_error_message(body)
 
       if !extra.is_empty
-        msg += " (#{extra()})"
+        msg += " (#{extra})"
       end
 
       return msg
@@ -433,5 +429,35 @@ module OCC
     def body
       return @request_body
     end
+  end
+end
+
+class AbstractNetworkJob
+  def to_s(debug)
+    saver = QDebugStateSaver.new(debug)
+    debug.set_auto_insert_spaces(false)
+    debug << job.meta_object.class_name << "(" << job.account.data << ", " << job.url.to_display_string << ", " << job.verb
+    reply = job.reply
+
+    if reply
+      debug << ", Original-Request-ID: " << reply.request.raw_header("Original-Request-ID") << ", X-Request-ID: " << reply.request.raw_header("X-Request-ID")
+      error_string = reply.raw_header("OC-ErrorString")
+
+      if !error_string.is_empty
+        debug << ", Error:" << error_string
+      end
+
+      if reply.error != :no_error
+        debug << ", NetworkError: " << reply.error_string
+      end
+    end
+
+    if job.timedout
+      debug << ", timedout"
+    end
+
+    debug << ")"
+
+    return debug.maybe_space
   end
 end

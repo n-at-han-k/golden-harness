@@ -81,11 +81,24 @@ module GoldenHarness
 
       # The first ternary this statement owns. One inside a nested lambda
       # belongs to that lambda's own statements and is lifted there instead.
+      # A statement of its own, which `stmt` reaches through the body it is in.
+      #
+      # `first_ternary` must not look past one: the ternary in
+      # owncloudpropagator's `std::remove_if` lambda is in the condition of an
+      # `if` INSIDE a range-for, and searching through the loop lifted it to
+      # the loop -- which copied the whole loop into both branches of a
+      # condition that belongs inside it.
+      NESTED = %w[
+        compound_statement if_statement while_statement do_statement
+        for_statement for_range_loop switch_statement case_statement
+        labeled_statement lambda_expression
+      ].freeze
+
       def first_ternary(node)
         return nil if node.kind == "lambda_expression"
 
         @cst.named(node).each do |kid|
-          next if kid.kind == "lambda_expression"
+          next if NESTED.include?(kid.kind)
 
           if kid.kind == "conditional_expression" && !@ternary_branch.key?(kid.start_byte)
             return kid
@@ -167,6 +180,16 @@ module GoldenHarness
         init = @cst.child(node, "init_declarator", field: :declarator)
         return bare_declaration(node) if init.nil?
 
+        # `for (auto i = c.begin(), last = c.end(); ...)` declares TWO names in
+        # one declaration, and reading only the first dropped `last` -- which
+        # the loop condition then referred to without ever binding it.
+        extra = @cst.named(node).select { _1.kind == "init_declarator" && _1.start_byte != init.start_byte }
+        return ([init] + extra).flat_map { one_declaration(node, _1, type) } unless extra.empty?
+
+        one_declaration(node, init, type)
+      end
+
+      def one_declaration(node, init, type)
         name = @cst.dig(init, "identifier")
         return [] if name.nil?
 
@@ -318,6 +341,9 @@ module GoldenHarness
         when "set" then Call(Const(:Set), :new)
         when "hash" then n(:hash)
         when "string" then Str("")
+        # `bool ok;` is `ok = false`, not `ok = nil`: the golden passes it to
+        # `getSelectiveSyncList(..., ok)` as an out-parameter and then tests it.
+        when "bool" then False_()
         # The last segment only. The oracle gives a type its full name --
         # `OCC::SyncJournalDb::DownloadInfo` -- and the golden writes the
         # nested type as the surrounding class already sees it.
@@ -383,13 +409,15 @@ module GoldenHarness
 
         deferred = []
         before = []
+        # Saved and RESTORED, not cleared: a statement inside a lambda body is
+        # emitted while the enclosing statement is still being built, and
+        # clearing these threw the outer statement's own hoists away.
+        outer = [@current_statement, @pending_updates, @pending_before]
         @current_statement = node
         @pending_updates = deferred
         @pending_before = before
         built = expression_statement_body(node, inner)
-        @pending_updates = nil
-        @pending_before = nil
-        @current_statement = nil
+        @current_statement, @pending_updates, @pending_before = outer
 
         before + built + deferred
       end
@@ -501,10 +529,20 @@ module GoldenHarness
 
       # `for (auto &e : coll)` -> `coll.each do |e|`.
       def for_range(node)
-        name = @cst.dig(node, "identifier", field: :declarator)
         collection = expr(@cst.field(node, :right))
-        CallBlock(Call(collection, :each), [@cst.text(name)],
+        CallBlock(Call(collection, :each), range_names(node),
                   Body(statements_of(@cst.field(node, :body))))
+      end
+
+      # `for (const auto &[path, error] : ...)` destructures, and so does a
+      # block parameter list -- `each do |path, error|`, which is what the
+      # golden has. Reading one `identifier` found only `path` and dropped the
+      # second name.
+      def range_names(node)
+        bound = @cst.child(node, "structured_binding_declarator", field: :declarator)
+        return @cst.named(bound).map { @cst.text(_1) } if bound
+
+        [@cst.text(@cst.dig(node, "identifier", field: :declarator))]
       end
 
       # `for (int i = 0; i < n; ++i)` -> `(0...n).each do |i|`.

@@ -20,7 +20,7 @@ require "qmetatype"
 require "qcoreapplication"
 
 module OCC
-  class Progress
+  module Progress
     _INSTANCE = nil
 
     def as_result_string(item)
@@ -311,7 +311,9 @@ module OCC
 
       @size_progress.set_completed(r)
     end
+  end
 
+  module Progress
     def estimates
       est = Estimates.new
       est.estimated_bandwidth = @progress_per_sec

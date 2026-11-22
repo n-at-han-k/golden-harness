@@ -537,8 +537,7 @@ module OCC
 
       if @root_job
         connect(@root_job.data, PropagateDirectory.abort_finished, this, OwncloudPropagator.emit_finished)
-        abort_root_job = lambda { @root_job.abort(:asynchronous) }
-        QMetaObject.invoke_method(@root_job.data, abort_root_job, :queued_connection)
+        QMetaObject.invoke_method(@root_job.data, lambda { @root_job.abort(:asynchronous) }, :queued_connection)
         QTimer.single_shot(5, this, OwncloudPropagator.abort_timeout)
       else
         emit_finished(:normal_error)
@@ -645,7 +644,7 @@ module OCC
     end
 
     def update_placeholder(item, file_name, replaces_file)
-      pin_ok = lambda do
+      unless (lambda {
         if item.type == :item_type_virtual_file_dehydration
           pin = sync_options.vfs.pin_state(item.local_name)
 
@@ -655,11 +654,7 @@ module OCC
         end
 
         return true
-      end
-
-      pin_ok.call
-
-      unless pin_ok
+      }).call
         raise
       end
 
@@ -1016,15 +1011,13 @@ module OCC
       keyword_init: true
     )
     def initialize(propagator)
-      root_item = lambda do
+      super(propagator, SyncFileItemPtr.new((lambda do
         f = SyncFileItem.new
         f.set_local_name("/")
 
         return f
-      end
+      end).call))
 
-      root_item.call
-      super(propagator, SyncFileItemPtr.new(root_item))
       @dir_deletion_jobs = PropagatorCompositeJob.new(propagator, path)
       connect(@dir_deletion_jobs, PropagatorJob.finished, this, PropagateRootDirectory.slot_dir_deletion_jobs_finished)
     end
@@ -1102,7 +1095,7 @@ module OCC
             error_paths = sub_job.error_paths
             delete_jobs = @dir_deletion_jobs.jobs_to_do
 
-            below_error_path = lambda do |p|
+            delete_jobs.erase(std::remove_if(delete_jobs.begin, delete_jobs.end, lambda do |p|
               Utility.as_key_value_range(error_paths).each do |path, error|
                 info = QFileInfo.new(path)
 
@@ -1116,9 +1109,8 @@ module OCC
               end
 
               return false
-            end
+            end), delete_jobs.end)
 
-            delete_jobs.erase(std::remove_if(delete_jobs.begin, delete_jobs.end, below_error_path), delete_jobs.end)
             @dir_deletion_jobs.set_jobs_to_do(delete_jobs)
           end
         end

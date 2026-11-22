@@ -45,6 +45,16 @@ Layout/IndentationWidth:
 
 Layout/ClassStructure:
   Enabled: true
+  # Its corrector was suspected of writing `end    def parse_checksum_header`,
+  # which does not parse -- and a Lint/Syntax error stops every cop after it in
+  # the run, so one bad line costs a whole file its layout. It turned out to be
+  # the INPUT: checksums.cpp also emitted `def (other)` for its member
+  # `operator==`, and a corrector moving nodes around an already-unparsable
+  # file is the artefact, not the cause. With the operator named, the
+  # correction is clean -- verified on that file in the shape that broke.
+  #
+  # `GoldenHarness::Emitter#order_members` emits the order anyway, so this
+  # normally has nothing to do and stands as the check that it got it right.
   ExpectedOrder:
     - module_inclusion
     - constants

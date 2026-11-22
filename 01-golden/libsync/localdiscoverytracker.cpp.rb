@@ -26,7 +26,7 @@ class LocalDiscoveryTracker
   end
 
   def add_touched_path(relative_path)
-    Log.debug("sync.localdiscoverytracker") { "inserted touched #{relative_path()}" }
+    Log.debug("sync.localdiscoverytracker") { "inserted touched #{relative_path}" }
     @local_discovery_paths.insert(relative_path)
   end
 
@@ -44,7 +44,7 @@ class LocalDiscoveryTracker
         paths.append(path)
       end
 
-      Log.debug("sync.localdiscoverytracker") { "partial discovery with paths:  #{paths()}" }
+      Log.debug("sync.localdiscoverytracker") { "partial discovery with paths:  #{paths}" }
     end
 
     @previous_local_discovery_paths = @local_discovery_paths
@@ -68,14 +68,14 @@ class LocalDiscoveryTracker
       Q_FALLTHROUGH()
 
       if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().local_name}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
       end
 
       if (
         !item.rename_target.is_empty &&
         @previous_local_discovery_paths.erase(item.rename_target)
       )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().rename_target}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
       end
 
       return
@@ -86,14 +86,14 @@ class LocalDiscoveryTracker
       Q_FALLTHROUGH()
 
       if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().local_name}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
       end
 
       if (
         !item.rename_target.is_empty &&
         @previous_local_discovery_paths.erase(item.rename_target)
       )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().rename_target}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
       end
 
       return
@@ -103,14 +103,14 @@ class LocalDiscoveryTracker
       Q_FALLTHROUGH()
 
       if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().local_name}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
       end
 
       if (
         !item.rename_target.is_empty &&
         @previous_local_discovery_paths.erase(item.rename_target)
       )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().rename_target}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
       end
 
       return
@@ -119,14 +119,14 @@ class LocalDiscoveryTracker
       Q_FALLTHROUGH()
 
       if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().local_name}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
       end
 
       if (
         !item.rename_target.is_empty &&
         @previous_local_discovery_paths.erase(item.rename_target)
       )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().rename_target}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
       end
 
       return
@@ -134,27 +134,27 @@ class LocalDiscoveryTracker
       Q_FALLTHROUGH()
 
       if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().local_name}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
       end
 
       if (
         !item.rename_target.is_empty &&
         @previous_local_discovery_paths.erase(item.rename_target)
       )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().rename_target}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
       end
 
       return
     when :message
       if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().local_name}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
       end
 
       if (
         !item.rename_target.is_empty &&
         @previous_local_discovery_paths.erase(item.rename_target)
       )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item().rename_target}" }
+        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
       end
 
       return
@@ -185,7 +185,7 @@ class LocalDiscoveryTracker
     end
 
     @local_discovery_paths.insert(item.local_name)
-    Log.debug("sync.localdiscoverytracker") { "inserted error item #{item().local_name}" }
+    Log.debug("sync.localdiscoverytracker") { "inserted error item #{item.local_name}" }
   end
 
   def slot_sync_finished(success)

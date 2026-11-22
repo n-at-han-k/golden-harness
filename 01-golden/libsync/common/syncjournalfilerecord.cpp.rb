@@ -54,11 +54,11 @@ end
 class SyncJournalFileRecord
   OTHER = default
   def initialize
-    @d = lambda do
+    @d = (lambda do
       null_data = QExplicitlySharedDataPointer.new(SyncJournalFileRecordData.new)
 
       return null_data
-    end.call
+    end).call
   end
 
   def initialize(path, type)
@@ -119,7 +119,7 @@ class SyncJournalFileRecord
     rec.d.server_has_ignored_files = (query.int_value(8) > 0)
     rec.d.checksum_header = query.ba_value(9)
     rec.d.has_dirty_placeholder = query.int_value(10)
-    Log.debug("sync.syncjournalfilerecord") { "Restored from db: #{rec()}" }
+    Log.debug("sync.syncjournalfilerecord") { "Restored from db: #{rec}" }
 
     unless rec.validate_record
       raise

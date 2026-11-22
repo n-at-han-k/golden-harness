@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "set"
 require "unparser"
 
 module GoldenHarness
@@ -150,23 +151,44 @@ module GoldenHarness
       n(:dstr, *parts)
     end
 
-    # `#{...}`, with any local variable in it written as a receiverless send.
+    def Interp(value) = n(:begin, value)
+
+    # Every `lvar` that nothing in `node` assigns, rewritten as a receiverless
+    # send.
     #
     # Unparser VERIFIES a dynamic string by printing it and parsing it back,
-    # and `"#{len}"` parses back as a method call, there being no scope inside
-    # a string to say otherwise. So any `lvar` under an interpolation makes it
-    # refuse the whole node with UnsupportedNodeError -- which is why this only
-    # showed up away from the gated cases, where every interpolated name
-    # happened to be a parameter and so already a send.
+    # against the local scope it has tracked so far. `"#{len}"` is accepted
+    # where `len = ...` precedes it, because the re-parse agrees it is an
+    # lvar -- and REFUSED, with UnsupportedNodeError for the whole method,
+    # where nothing assigns it, because then the re-parse says send.
     #
-    # The two spellings print identically, so nothing is lost.
-    def Interp(value) = n(:begin, sends_for_locals(value))
-
-    def sends_for_locals(node)
+    # The emitter reads whether a name is a local off the oracle, which answers
+    # for the C++: a function PARAMETER is a local there, and in the Ruby it is
+    # an argument that no `lvasgn` mentions. Reconciled here, over the finished
+    # method, where every binding the Ruby actually has is visible.
+    def sends_for_free_names(node, bound = nil)
       return node unless node.is_a?(::Parser::AST::Node)
-      return n(:send, nil, node.children.first) if node.type == :lvar
 
-      node.updated(nil, node.children.map { sends_for_locals(_1) })
+      bound ||= bindings(node)
+      return n(:send, nil, node.children.first) if
+        node.type == :lvar && !bound.include?(node.children.first)
+
+      node.updated(nil, node.children.map { sends_for_free_names(_1, bound) })
+    end
+
+    BINDING_TYPES = %i[lvasgn arg optarg restarg kwarg kwoptarg blockarg
+                       procarg0 shadowarg op_asgn or_asgn and_asgn].freeze
+
+    def bindings(node, into = Set.new)
+      return into unless node.is_a?(::Parser::AST::Node)
+
+      if BINDING_TYPES.include?(node.type)
+        target = node.children.first
+        into << target if target.is_a?(Symbol)
+        into.merge(bindings(target)) if target.is_a?(::Parser::AST::Node)
+      end
+      node.children.each { bindings(_1, into) }
+      into
     end
 
     private

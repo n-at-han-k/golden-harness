@@ -267,22 +267,22 @@ module OCC
       check_error_blacklisting(item)
       @needs_update = true
 
-      item_is_new = lambda do
+      unless (lambda {
         it = @sync_items.find(item)
 
         if it != @sync_items.cend
           item2 = it.get
-          Log.warn("sync.engine") { "We already have an item for  #{item2.local_name} : #{item2.instruction} #{item2.direction} | #{item.instruction} #{item.direction}" }
+
+          Log.warn("sync.engine") {
+            "We already have an item for  #{item2.local_name} : #{item2.instruction} #{item2.direction} |" \
+              "#{item.instruction} #{item.direction}"
+          }
 
           return false
         end
 
         return true
-      end
-
-      item_is_new.call
-
-      unless item_is_new
+      }).call
         raise
       end
 
@@ -321,7 +321,11 @@ module OCC
 
       if free_bytes >= 0
         if free_bytes < min_free
-          Log.warn("sync.engine") { "Too little space available at #{@local_path} . Have #{free_bytes} bytes and require at least #{min_free} bytes" }
+          Log.warn("sync.engine") {
+            "Too little space available at #{@local_path} . Have #{free_bytes} bytes and require at least #{min_free}" \
+              "bytes"
+          }
+
           sync_error("Only #{Utility.octets_to_string(free_bytes)} are available, need at least #{Utility.octets_to_string(min_free)} to start")
           finalize(false)
 
@@ -539,11 +543,9 @@ module OCC
             return old_size - c.size
           end
 
-          not_in_names = lambda do |i|
+          erase_if.call(@sync_items, lambda do |i|
             return !names.contains(QStringView.new(i.local_name))
-          end
-
-          erase_if.call(@sync_items, not_in_names)
+          end)
         end
 
         Log.info("sync.engine") { "#### Reconcile (aboutToPropagate) #################################################### #{@duration}" }
@@ -621,16 +623,12 @@ module OCC
     end
 
     def slot_item_completed(item)
-      item_not_finished = lambda do
+      unless (lambda {
         finished = item.finished
         item.finished = true
 
         return !finished
-      end
-
-      item_not_finished.call
-
-      unless item_not_finished
+      }).call
         raise
       end
 
