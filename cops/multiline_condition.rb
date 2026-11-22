@@ -146,12 +146,33 @@ module RuboCop
           condition.begin_type? && condition.multiline?
         end
 
+        # The canonical form is compared EXACTLY, not merely recognised by
+        # shape. `canonical?` only asks whether the condition is parenthesised
+        # and spans lines, and that is true of a condition the C++ had already
+        # broken -- so one arriving as
+        #
+        #     if (compute_local_checksum(...)
+        #         && item.checksum_header == db_entry.checksum_header)
+        #
+        # was wrapped once, kept the source's deeper continuation indent on the
+        # second operand, and then counted as canonical forever after. Nothing
+        # in rubocop normalises that: Layout/MultilineOperationIndentation does
+        # not reach inside a parenthesised condition, so both indents are
+        # accepted and whichever the generator emitted is what survived.
+        #
+        # Rendering the target and replacing only on a mismatch is idempotent by
+        # construction -- `rewritten` is a function of the operands and the
+        # node's indent, so one correction reaches a fixed point.
         def wrap_condition(node)
           condition = node.condition
-          return unless wrappable?(condition)
+          return if condition.nil? || !boolean?(condition)
+          return unless condition.multiline? || condition.source.length >= MIN_WIDTH
+
+          target = rewritten(node, condition)
+          return if condition.source == target
 
           add_offense(condition) do |corrector|
-            corrector.replace(condition, rewritten(node, condition))
+            corrector.replace(condition, target)
           end
         end
 

@@ -862,3 +862,116 @@ transform:
     rewrite: { rewriters: [t-else], source: $STMT }
 fix: |-
   if ($TAC) { $THEN } else { $ELSE }
+---
+# `if (auto x = e) { ... }` -> `auto x = e; if (x) { ... }`.
+#
+# A C++ if-with-initialiser. The declaration lives in the condition_clause's
+# `value` field, and nothing downstream knows how to read it there: the emitter
+# passes a condition through as text, so the `auto` survived into the Ruby as
+# `if auto state = ...`, which is a syntax error.
+#
+# The golden hoists it to its own statement and tests the bare name:
+#
+#     state = @discovery_data.sync_options.vfs.pin_state(@current_folder.local)
+#
+#     if state
+#       @pin_state = state
+#     end
+#
+# The else branch is preserved because the if is rebuilt by a REWRITER over
+# the whole if_statement rather than by a pattern that would have to re-list
+# the consequence and alternative -- `$REST` is the original node with only
+# the condition's declaration replaced by its name.
+#
+# Terminates: the rewritten if has a plain identifier in its condition, so it
+# no longer matches, and the hoisted declaration is not inside a
+# condition_clause.
+id: s-if-init-hoist
+language: cpp
+severity: hint
+rule:
+  kind: if_statement
+  pattern: $IF
+  has:
+    field: condition
+    kind: condition_clause
+    has:
+      field: value
+      kind: declaration
+      all:
+        - has: { field: declarator, kind: identifier, pattern: $IN }
+        - has: { field: value, pattern: $IV }
+rewriters:
+  - id: r-cond-decl
+    rule:
+      kind: declaration
+      inside: { kind: condition_clause }
+      has: { field: declarator, kind: identifier, pattern: $CN }
+    fix: "$CN"
+transform:
+  REST:
+    rewrite: { rewriters: [r-cond-decl], source: $IF }
+# The NEWLINE is load-bearing. With the two statements on one line the emitter
+# passed them through as `state = ... if state`, which Ruby reads as a MODIFIER
+# if -- the body then had no opening, and the file died on `unexpected token
+# end` at the `end` that was meant to close it.
+fix: |-
+  auto $IN = $IV;
+  $REST
+---
+# An empty `default:` label disappears.
+#
+# `default: break;` loses its break to s-drop-case-break and its body to
+# s-brace-default, leaving `default: { }` -- which the emitter renders as a
+# branch with no body:
+#
+#     else
+#     end
+#
+# The golden has no such branch: a default that does nothing is simply absent.
+#
+# `not: { has: { field: value } }` is what separates `default:` from a
+# fall-through `case X: { }`, which s-brace-case-empty creates DELIBERATELY and
+# the golden keeps as its own empty `when`.
+id: s-drop-empty-default
+language: cpp
+severity: hint
+rule:
+  kind: case_statement
+  not: { has: { field: value, pattern: $V } }
+  has:
+    kind: compound_statement
+    not: { has: { nthChild: 1 } }
+fix: ""
+---
+# An empty `if` body becomes an explicit `nil`.
+#
+#     if (destPerms.isNull()) {
+#     } else if (...) {
+#
+# The golden spells the empty branch out:
+#
+#     if dest_perms.is_null
+#       nil
+#     elsif (
+#
+# Both forms are valid Ruby, so this is about saying what the branch means
+# rather than leaving a hole where a body should be.
+#
+# `nil` is emitted as C++ because `nil` is a legal C++ identifier -- the file
+# still parses, the emitter passes the expression statement through, and
+# rubyify's KEEP list already holds `nil` so nothing renames it. The same trick
+# carries `raise`.
+#
+# Scoped to an if_statement's `consequence`: an empty loop body is a spin and
+# an empty `else` is handled by dropping the branch, not filling it.
+#
+# Terminates: the replacement body is non-empty, so it does not match again.
+id: s-empty-if-body
+language: cpp
+severity: hint
+rule:
+  kind: compound_statement
+  inside: { kind: if_statement, field: consequence }
+  not: { has: { nthChild: 1 } }
+fix: "{ nil; }"

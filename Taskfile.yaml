@@ -34,6 +34,11 @@ tasks:
             *) echo "simplify: fixpoint after $i round(s)"; break ;;
           esac
         done
+      # After the fixpoint, not inside it: baking an expression into a string
+      # literal hides it from every later AST rule, and s-snake-identifier
+      # matches nodes INSIDE the call it rewrites -- on an overlap ast-grep
+      # keeps the outer match, so sharing a scan would drop the renaming.
+      - ast-grep scan -c sgconfig.yml -r scripts/rules/02-interp.yml --update-all tmp
       - ast-grep scan -c sgconfig.yml -r scripts/transform.yml --update-all tmp
       - python3 scripts/rubyify.py tmp tmp
       # Non-zero whenever offences remain after autocorrect, which is expected

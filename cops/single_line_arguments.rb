@@ -46,9 +46,13 @@ module RuboCop
 
         def on_send(node)
           args = node.arguments
-          return if args.size < 2
+          return if args.empty?
           # A trailing block is not part of the argument list.
           return if node.block_literal?
+          if args.one?
+            join_up(node, args.first)
+            return
+          end
           if args.first.source_range.line == args.last.source_range.last_line
             # Splitting applies only to a call ALREADY in the wrapped form --
             # one whose `(` ends its line. A call the source put on a single
@@ -86,6 +90,44 @@ module RuboCop
 
         def too_long?(_node, args)
           joined(args).length >= ARGS_WIDTH
+        end
+
+        # A lone argument pushed onto its own line comes back up onto the call's.
+        #
+        #     # bad
+        #     @discovery_data.fatal_error(
+        #                     "Server replied ... %1: %2".arg(folder, msg)
+        #                   )
+        #
+        #     # good
+        #     @discovery_data.fatal_error("Server replied ... %1: %2".arg(folder, msg))
+        #
+        # Same artefact as the multi-argument case, and the only shape left that
+        # nothing normalised. RuboCop will not touch it: measured with `--only
+        # Layout/FirstArgumentIndentation,Layout/ArgumentAlignment,Layout/ClosingParenthesisIndentation`,
+        # a 22-space-indented lone argument reports NO offence, so whatever
+        # column the C++ happened to leave it in is what survived -- and
+        # s-ternary-arg duplicates the statement per branch, so the same call
+        # came out indented 15 in one branch and 28 in the other.
+        #
+        # `split` cannot do this: it replaces only the ARGUMENTS range, and for
+        # one argument that range's replacement is the argument's own source, so
+        # the leading whitespace is outside the edit and nothing moves.
+        # Joining replaces the span BETWEEN the parentheses instead.
+        #
+        # An argument that is itself multi-line keeps its layout, for the same
+        # reason the multi-argument path skips those: a newline inside it is a
+        # statement separator, not decoration.
+        def join_up(node, arg)
+          return if node.loc.begin.nil? || node.loc.end.nil?
+          return if arg.multiline?
+          return if node.loc.begin.end_pos == arg.source_range.begin_pos &&
+                    arg.source_range.end_pos == node.loc.end.begin_pos
+
+          inner = node.loc.begin.end.join(node.loc.end.begin)
+          add_offense(node) do |corrector|
+            corrector.replace(inner, arg.source)
+          end
         end
 
         # One argument per line, at one level in from the call.

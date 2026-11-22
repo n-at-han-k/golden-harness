@@ -211,7 +211,7 @@ module OCC
             unsupported_character.call(item.local_name)
 
             if !unsupported_character.is_null
-              item.error_string = "File names containing the character '%1' are not supported on this file system.".arg(unsupported_character)
+              item.error_string = "File names containing the character '#{unsupported_character}' are not supported on this file system."
             elsif is_invalid_pattern
               item.error_string = "File name contains at least one invalid character"
             else
@@ -602,7 +602,7 @@ module OCC
               return
             end
 
-            @discovery_data.fatal_error("Error while doing a rename, unhandled status code: %1".arg(job.http_status_code))
+            @discovery_data.fatal_error("Error while doing a rename, unhandled status code: #{job.http_status_code}")
           end
 
           job.start
@@ -730,11 +730,11 @@ module OCC
             item.set_instruction(CSYNC_INSTRUCTION_REMOVE)
             item.direction = :up
           end
-
-          finalize.call(path, recurse_query_server)
-
-          return
         end
+
+        finalize.call(path, recurse_query_server)
+
+        return
       end
 
       unless local_entry.is_valid
@@ -763,7 +763,6 @@ module OCC
             )
           )
         )
-
           if no_server_entry
             item.set_instruction(CSYNC_INSTRUCTION_REMOVE)
             item.direction = :down
@@ -1200,9 +1199,9 @@ module OCC
       if check_permissions(item)
         if item.is_restoration && item.is_directory
           recurse = true
-        else
-          recurse = false
         end
+      else
+        recurse = false
       end
 
       if recurse
@@ -1547,41 +1546,29 @@ module OCC
 
           if @local_query_done
             this.process
-          else
-            code = results.error.code
-            Log.warn("sync.discovery") { "Server error in directory #{@current_folder.server} #{code}" }
+          end
+        else
+          code = results.error.code
+          Log.warn("sync.discovery") { "Server error in directory #{@current_folder.server} #{code}" }
 
-            if server_job.is_root_path
-              if code == 404
-                @discovery_data.fatal_error("This Space is currently unavailable")
+          if server_job.is_root_path
+            if code == 404
+              @discovery_data.fatal_error("This Space is currently unavailable")
 
-                return
-              end
-            else
-              if code >= 403
-                @dir_item.set_instruction(CSYNC_INSTRUCTION_IGNORE)
-                @dir_item.error_string = results.error.message
-                this.finished
-
-                return
-              end
-
-              if @current_folder.server.is_empty
-                @discovery_data.fatal_error(
-                                tr("Server replied with an error while reading directory »%1«: %2") % {
-                                  dir: "/",
-                                  msg: results.error.message
-                                }
-                              )
-              else
-                @discovery_data.fatal_error(
-                                tr("Server replied with an error while reading directory »%1«: %2") % {
-                                  dir: @current_folder.server,
-                                  msg: results.error.message
-                                }
-                              )
-              end
+              return
             end
+          elsif code >= 403
+            @dir_item.set_instruction(CSYNC_INSTRUCTION_IGNORE)
+            @dir_item.error_string = results.error.message
+            this.finished
+
+            return
+          end
+
+          if @current_folder.server.is_empty
+            @discovery_data.fatal_error("Server replied with an error while reading directory »/«: #{results.error.message}")
+          else
+            @discovery_data.fatal_error("Server replied with an error while reading directory »#{@current_folder.server}«: #{results.error.message}")
           end
         end
       end
@@ -1618,8 +1605,9 @@ module OCC
 
         if @server_job
           @server_job.abort
-          @discovery_data.fatal_error(msg)
         end
+
+        @discovery_data.fatal_error(msg)
       end
 
       connect(local_job, DiscoverySingleLocalDirectoryJob.finished_non_fatal_error, this) do |msg|
