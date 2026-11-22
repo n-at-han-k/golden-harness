@@ -47,6 +47,13 @@ module RuboCop
         # picks, both sides get the same treatment.
         MIN_WIDTH = 60
 
+        # A nested parenthesised group is ALWAYS expanded, with no width
+        # threshold. The golden cannot be fitted with one: it expands a
+        # 60-character group -- `(local_entry.is_valid || @query_local ==
+        # :parent_not_changed)` -- while keeping a 62-character one inline.
+        # Measured both ways over the full file, always expanding agrees with
+        # it on 21 more lines than a threshold of 80 does.
+
         # An unwrapped first line past this width gets a blank before the body.
         LONG_FIRST_LINE = 120
 
@@ -60,8 +67,32 @@ module RuboCop
 
         def on_while(node)
           drop_redundant_parens(node)
+          wrap_condition(node)
         end
         alias on_until on_while
+
+        # Rule 4: the same layout for a long boolean ASSIGNMENT, which the
+        # golden wraps exactly as it wraps a condition:
+        #
+        #     no_server_entry = (
+        #       (@query_server != :parent_not_changed && !server_entry.is_valid) ||
+        #       (@query_server == :parent_not_changed && !db_entry.is_valid)
+        #     )
+        def on_lvasgn(node)
+          wrap_value(node, node.expression)
+        end
+        alias on_ivasgn on_lvasgn
+        alias on_cvasgn on_lvasgn
+        alias on_gvasgn on_lvasgn
+
+        # `item.type = ...` is a send, not an assignment node; its value is the
+        # single argument.
+        def on_send(node)
+          return unless node.assignment_method?
+          return unless node.arguments.one?
+
+          wrap_value(node, node.arguments.first)
+        end
 
         private
 
@@ -93,10 +124,24 @@ module RuboCop
           end
         end
 
-        # Rule 1 applies: a single-line boolean condition long enough to wrap.
+        # Rule 1 applies: a boolean condition that is not already laid out.
+        #
+        # A condition the C++ had already broken across lines counts too. It
+        # arrives multiline but in the C++'s shape -- operator at the end of the
+        # line, operand on the next -- and the old `!multiline?` test skipped
+        # it, so `if job.http_status_code == 207 ||` stayed as the source left
+        # it. Canonical form is a parenthesised condition spanning lines, which
+        # makes this idempotent.
         def wrappable?(condition)
-          !condition.nil? && !condition.multiline? &&
-            condition.source.length >= MIN_WIDTH && boolean?(condition)
+          return false if condition.nil? || !boolean?(condition)
+          return false if canonical?(condition)
+
+          condition.multiline? || condition.source.length >= MIN_WIDTH
+        end
+
+        # Already in the form rule 1 produces.
+        def canonical?(condition)
+          condition.begin_type? && condition.multiline?
         end
 
         def wrap_condition(node)
@@ -123,6 +168,23 @@ module RuboCop
 
           add_offense(body.source_range.begin, message: MSG_BODY_GAP) do |corrector|
             corrector.insert_before(range_by_whole_lines(body.source_range), "\n")
+          end
+        end
+
+        def wrap_value(node, value)
+          # A long parenthesised value counts even when its operator is not
+          # boolean. `modified_on_server = (item.instruction & (A | B | C | D))`
+          # is bitwise, so `boolean?` rejects it, but the golden still puts the
+          # content on its own line -- and the renderer already produces that
+          # shape for a single operand.
+          unless wrappable?(value)
+            return unless value&.begin_type? && !value.multiline? &&
+                          value.source.length >= MIN_WIDTH
+
+          end
+
+          add_offense(value) do |corrector|
+            corrector.replace(value, rewritten(node, value, expand_inner: false))
           end
         end
 
@@ -173,20 +235,28 @@ module RuboCop
           out
         end
 
-        def rewritten(node, condition)
+        def rewritten(node, condition, expand_inner: true)
           indent = node.source_range.source_line[/\A[ \t]*/]
-          "(\n#{render(unwrap(condition), "#{indent}  ")}\n#{indent})"
+          inner = render(unwrap(condition), "#{indent}  ", expand_inner: expand_inner)
+          "(\n#{inner}\n#{indent})"
         end
 
         # One operand per line at `indent`. A parenthesised operand that is
         # itself a boolean chain is laid out the same way, one level deeper,
         # which is what reproduces the golden's nesting.
-        def render(node, indent)
+        # `expand_inner` decides whether a parenthesised sub-group is itself
+        # broken up. The golden expands one inside a CONDITION (6 of its 7
+        # wrapped conditions) and keeps one inline inside an ASSIGNMENT value
+        # -- `no_server_entry = ((a && b) || (c && d))` stays two lines -- so
+        # the caller passes what it is.
+        def render(node, indent, expand_inner: true)
           operands(node).each_slice(2).map do |operand, operator|
             tail = operator ? " #{operator}" : ""
             inner = unwrap(operand)
-            if operand.begin_type? && (inner.and_type? || inner.or_type?)
-              "#{indent}(\n#{render(inner, "#{indent}  ")}\n#{indent})#{tail}"
+            if expand_inner && operand.begin_type? &&
+               (inner.and_type? || inner.or_type?)
+              nested = render(inner, "#{indent}  ", expand_inner: expand_inner)
+              "#{indent}(\n#{nested}\n#{indent})#{tail}"
             else
               "#{indent}#{operand.source.gsub(/\s*\n\s*/, ' ')}#{tail}"
             end

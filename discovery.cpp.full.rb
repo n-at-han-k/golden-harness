@@ -187,7 +187,19 @@ module OCC
           if item.local_name.ends_with(".")
             item.error_string = "File names ending with a period are not supported on this file system."
           else
-            unsupported_character = QChar
+            unsupported_character = lambda do |f_name|
+              unsupported_character = "\\:?*\"<>|"
+
+              unsupported_character.each do |x|
+                if f_name.contains(x)
+                  return x
+                end
+              end
+
+              return ""
+            end
+
+            unsupported_character.call(item.local_name)
 
             if (!unsupported_character.is_null)
               item.error_string = "File names containing the character '%1' are not supported on this file system.".arg(unsupported_character)
@@ -223,8 +235,21 @@ module OCC
     end
 
     def process_file(path, local_entry, server_entry, db_entry)
-      has_server = (server_entry.is_valid ? "true" : (@query_server == :parent_not_changed ? "db" : "false"))
-      has_local = (local_entry.is_valid ? "true" : (@query_local == :parent_not_changed ? "db" : "false"))
+      if server_entry.is_valid
+        has_server = "true"
+      elsif @query_server == :parent_not_changed
+        has_server = "db"
+      else
+        has_server = "false"
+      end
+
+      if local_entry.is_valid
+        has_local = "true"
+      elsif @query_local == :parent_not_changed
+        has_local = "db"
+      else
+        has_local = "false"
+      end
 
       Log.info("sync.discovery") {
         "Processing (db|local|remote)  #{path.original}" \
@@ -304,7 +329,11 @@ module OCC
       item.checksum_header = server_entry.checksum_header
       item.file_id = server_entry.file_id
       item.remote_perm = server_entry.remote_perm
-      item.type = (server_entry.is_directory ? ItemTypeDirectory : ItemTypeFile)
+      if server_entry.is_directory
+        item.type = :item_type_directory
+      else
+        item.type = :item_type_file
+      end
       item.etag = server_entry.etag
 
       if !server_entry.error.is_empty
@@ -600,7 +629,9 @@ module OCC
         end
 
         return modified_on_server
-      end.call
+      end
+
+      server_modified.call
 
       @child_modified |= server_modified
 
@@ -619,9 +650,9 @@ module OCC
           recurse_query_local = :parent_not_changed
         else
           if local_entry.is_directory || item.instruction == CSYNC_INSTRUCTION_RENAME
-            :normal_query
+            recurse_query_local = :normal_query
           else
-            :parent_dont_exist
+            recurse_query_local = :parent_dont_exist
           end
         end
 
@@ -708,7 +739,11 @@ module OCC
           item.checksum_header.clear
           item.size = local_entry.size
           item.modtime = local_entry.modtime
-          item.type = (local_entry.is_directory ? ItemTypeDirectory : ItemTypeFile)
+          if local_entry.is_directory
+            item.type = :item_type_directory
+          else
+            item.type = :item_type_file
+          end
           @child_modified = true
         else
           item.set_instruction(CSYNC_INSTRUCTION_SYNC)
@@ -793,7 +828,8 @@ module OCC
             Log.warn("sync.discovery") { "Wiping virtual file without db entry for #{path.local}" }
             item.set_instruction(CSYNC_INSTRUCTION_REMOVE)
             item.direction = :down
-          elsif Log.warn("sync.discovery") { "Virtual file without db entry for #{path.local} but looks odd, keeping" }
+          else
+            Log.warn("sync.discovery") { "Virtual file without db entry for #{path.local} but looks odd, keeping" }
             item.set_instruction(CSYNC_INSTRUCTION_IGNORE)
           end
         end
@@ -828,7 +864,10 @@ module OCC
           base.modtime != local_entry.modtime ||
           base.size != local_entry.size
         )
-          Log.info("sync.discovery") { "Not a move, mtime or size differs,  modtime: #{base.modtime} #{local_entry.modtime} ,  size:" } << base.size << local_entry.size
+          Log.info("sync.discovery") {
+            "Not a move, mtime or size differs,  modtime: #{base.modtime} #{local_entry.modtime} ,  size:" \
+              "#{base.size} #{local_entry.size}"
+          }
 
           return false
         end
@@ -881,7 +920,10 @@ module OCC
       move_perms = check_move_permissions(base.remote_perm, original_path, item.is_directory)
 
       if !move_perms.source_ok || !move_perms.destination_ok
-        Log.info("sync.discovery") { "Move without permission to rename base file,  source: #{move_perms.source_ok} , target: #{move_perms.destination_ok} , targetNew: #{move_perms.destination_new_ok}" }
+        Log.info("sync.discovery") {
+          "Move without permission to rename base file,  source: #{move_perms.source_ok} , target: #{move_perms.destination_ok}" \
+            ", targetNew: #{move_perms.destination_new_ok}"
+        }
         post_process_local_new.call(path)
         finalize.call(path, recurse_query_server)
 
@@ -1241,7 +1283,13 @@ module OCC
     end
 
     def check_move_permissions(src_perm, src_path, is_directory)
-      dest_perms = (!@root_permissions.is_null ? @root_permissions : (@dir_item ? @dir_item.remote_perm : @root_permissions))
+      if !@root_permissions.is_null
+        dest_perms = @root_permissions
+      elsif @dir_item
+        dest_perms = @dir_item.remote_perm
+      else
+        dest_perms = @root_permissions
+      end
       file_perms = src_perm
       is_rename = src_path.starts_with(@current_folder.original) && src_path.last_index_of("/") == @current_folder.original.size
       destination_ok = true

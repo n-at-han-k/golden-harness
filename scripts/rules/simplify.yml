@@ -658,3 +658,120 @@ transform:
   MSNAKE:
     convert: { source: $MBARE, toCase: snakeCase }
 fix: "_$MSNAKE"
+---
+# A default-constructed Qt string type is an empty string.
+#
+# `QChar()`, `QString()`, `QByteArray()` all mean "empty" -- there is no Qt
+# string type in Ruby, so they are plain `""`, the same reasoning that turns
+# `QStringLiteral("x")` into `"x"` and `QLatin1Char('.')` into `"."` above.
+#
+# `""` is valid C++ too, so this stays a C++ -> C++ rule and the file keeps
+# parsing for everything downstream. Caught here rather than in the Ruby,
+# because by then the zero-argument parens have been stripped and `QChar()` is
+# indistinguishable from a reference to a constant named QChar.
+id: s-qt-empty-string
+language: cpp
+severity: hint
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        regex: '^Q(String|Char|ByteArray|Latin1String|Latin1Char)$'
+    - has:
+        field: arguments
+        kind: argument_list
+        not: { has: { nthChild: 1 } }
+fix: '""'
+---
+# A ternary ASSIGNMENT becomes an if/else.
+#
+# `Style/DisableSyntax` bans the ternary but does not autocorrect it -- it only
+# reports -- so the expansion has to happen in the rules, and the golden spells
+# it as an if/else chain:
+#
+#     if @query_local == :parent_not_changed
+#       recurse_query_local = :parent_not_changed
+#     elsif (...)
+#       recurse_query_local = :normal_query
+#     else
+#       recurse_query_local = :parent_dont_exist
+#     end
+#
+# Both forms are rewritten to a C++ `if`, so the file keeps parsing and the
+# emitter's existing s-if-else handles it. A NESTED ternary needs no special
+# case: the else branch comes out as another ternary assignment, which the
+# simplify fixpoint expands on the next round, and Style/IfInsideElse then
+# collapses `else { if ... }` to `elsif`.
+#
+# Only assignment position. A ternary used as an argument stays a ternary --
+# the golden keeps `(is_directory ? ItemTypeDirectory : ItemTypeFile)` -- and
+# there is nowhere to put the if.
+#
+# `stopBy: end` on the conditional_expression because the earlier ternary
+# normalisation has already wrapped it in parens.
+id: s-ternary-decl
+language: cpp
+severity: hint
+rule:
+  kind: declaration
+  has:
+    field: declarator
+    kind: init_declarator
+    all:
+      - has: { field: declarator, stopBy: end, kind: identifier, pattern: $TN }
+      # The conditional must BE the value, not merely live somewhere inside
+      # it. `stopBy: end` here reached a ternary nested in an argument --
+      # `traversal_pattern_match(path, (is_directory ? A : B))` -- and hoisted
+      # it as though it were the assigned value, which silently replaced the
+      # call with an if/else over the wrong variable. Same for a ternary deep
+      # inside a lambda body.
+      #
+      # Two shapes, because the earlier ternary normalisation wraps it in one
+      # layer of parens.
+      - has:
+          field: value
+          any:
+            - kind: conditional_expression
+              all:
+                - has: { field: condition, pattern: $TC }
+                - has: { field: consequence, pattern: $TT }
+                - has: { field: alternative, pattern: $TE }
+            - kind: parenthesized_expression
+              has:
+                kind: conditional_expression
+                all:
+                  - has: { field: condition, pattern: $TC }
+                  - has: { field: consequence, pattern: $TT }
+                  - has: { field: alternative, pattern: $TE }
+fix: |-
+  if ($TC) { $TN = $TT; } else { $TN = $TE; }
+---
+# The same for a plain assignment, which is also what the nested case leaves
+# behind for the next round of the fixpoint.
+id: s-ternary-assign
+language: cpp
+severity: hint
+rule:
+  kind: expression_statement
+  has:
+    kind: assignment_expression
+    all:
+      - has: { field: left, pattern: $AN }
+      - has:
+          field: right
+          any:
+            - kind: conditional_expression
+              all:
+                - has: { field: condition, pattern: $AC }
+                - has: { field: consequence, pattern: $AT }
+                - has: { field: alternative, pattern: $AE }
+            - kind: parenthesized_expression
+              has:
+                kind: conditional_expression
+                all:
+                  - has: { field: condition, pattern: $AC }
+                  - has: { field: consequence, pattern: $AT }
+                  - has: { field: alternative, pattern: $AE }
+fix: |-
+  if ($AC) { $AN = $AT; } else { $AN = $AE; }

@@ -26,7 +26,6 @@ import pathlib
 import re
 import sys
 
-CLASS_TAG = re.compile(r"^(\s*)# @class (\S+)\s*$")
 
 # Misspellings in discovery.cpp that the golden spells correctly. Listed so
 # the correction is a declared decision rather than an invisible one.
@@ -196,57 +195,6 @@ def apply_naming(text: str) -> str:
     return text
 
 
-def group_classes(text: str) -> str:
-    lines = text.split("\n")
-    out: list[str] = []
-    groups: dict[str, list[list[str]]] = {}
-    order: list[str] = []
-    insert_at: int | None = None
-    i = 0
-    while i < len(lines):
-        m = CLASS_TAG.match(lines[i])
-        if not m:
-            out.append(lines[i])
-            i += 1
-            continue
-        cls = m.group(2)
-        if cls not in groups:
-            groups[cls] = []
-            order.append(cls)
-            if insert_at is None:
-                insert_at = len(out)
-        i += 1
-        block, depth, started = [], 0, False
-        while i < len(lines):
-            line, stripped = lines[i], lines[i].strip()
-            if re.match(r"^def\b", stripped):
-                depth += 1
-                started = True
-            elif stripped == "end" and started:
-                depth -= 1
-                block.append(line)
-                i += 1
-                if depth == 0:
-                    break
-                continue
-            elif re.match(r"^(if|unless|while|until|case|begin|loop)\b", stripped) \
-                    or stripped.endswith(" do") or re.search(r"\bdo \|", stripped):
-                depth += 1
-            block.append(line)
-            i += 1
-        groups[cls].append(block)
-    if insert_at is None:
-        return text
-    rendered: list[str] = []
-    for cls in order:
-        rendered.append(f"class {cls}")
-        for block in groups[cls]:
-            rendered.extend(block)
-            rendered.append("")
-        rendered.append("end")
-    return "\n".join(out[:insert_at] + rendered + out[insert_at:])
-
-
 SHEBANG = "#!/usr/bin/env ruby"
 
 
@@ -261,7 +209,6 @@ def main() -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         text = path.read_text(encoding="utf-8", errors="replace")
         text = apply_naming(text)
-        text = group_classes(text)
         if not text.startswith(SHEBANG):
             text = SHEBANG + "\n" + text
         target.write_text(text, encoding="utf-8")

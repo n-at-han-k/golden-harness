@@ -82,8 +82,18 @@ STMT_BLOCKS = ["s-if-else", "s-if", "s-while", "s-foreach", "s-for",
                "s-default", "s-block"]
 
 
+# Ordered BEFORE the leaves, but dropped at the deepest tier like the blocks.
+#
+# An IIFE declaration is also a plain declaration, so it has to beat s-decl in
+# the rewriter list -- the first match wins, and the leaves are listed first --
+# while its own rule delegates to the next tier and so cannot exist where there
+# is none.
+STMT_FIRST = ["s-iife-decl-args", "s-iife-decl"]
+
+
 def stmt_ids(tier: int, leaves_only: bool) -> str:
-    names = STMT_LEAVES + ([] if leaves_only else STMT_BLOCKS) + ["s-comment"]
+    names = (([] if leaves_only else STMT_FIRST) + STMT_LEAVES
+             + ([] if leaves_only else STMT_BLOCKS) + ["s-comment"])
     return "[" + ", ".join(f"{n}-{tier}" for n in names) + "]"
 
 
@@ -324,6 +334,15 @@ def statement_tier(tier: int) -> str:
       BARGS:
         replace: {{ source: $BV, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
     fix: "$BT.new($BARGS)"
+  # An immediately-invoked lambda whose body is NOTHING BUT `return expr;`
+  # reduces to that expression.
+  #
+  # `nthChild: {{ position: 1, reverse: true }}` plus `not: nthChild: 2` is the
+  # "exactly one statement" test, and it is load-bearing. Without it the rule
+  # matched a return ANYWHERE in the body and emitted only that expression,
+  # silently discarding every other statement -- `const bool serverModified =
+  # [&] {{ ... 20 lines ... return modifiedOnServer; }}();` collapsed to
+  # `server_modified = modified_on_server`, losing the whole computation.
   - id: l-iife{t}
     rule:
       kind: call_expression
@@ -333,9 +352,11 @@ def statement_tier(tier: int) -> str:
         has:
           field: body
           kind: compound_statement
-          has:
-            kind: return_statement
-            has: {{ stopBy: end, pattern: $IIFE }}
+          all:
+            - has:
+                kind: return_statement
+                has: {{ stopBy: end, pattern: $IIFE }}
+            - not: {{ has: {{ nthChild: 2 }} }}
     fix: "$IIFE"
   # `OC_ASSERT(cond)` -> `unless cond / raise / end`
   #
@@ -563,7 +584,111 @@ def statement_tier(tier: int) -> str:
     fix: "$SCB"
 """
     if not last:
-        out += f"""  # `f(x, [&](const Rec &rec) {{ ... }})` -> `f(x) do |rec| ... end`
+        out += f"""  # An immediately-invoked lambda BOUND TO A NAME:
+  #
+  #     const bool serverModified = [&] {{ ...; return x; }}();
+  #
+  # becomes
+  #
+  #     server_modified = lambda do
+  #       ...
+  #     end
+  #     server_modified.call
+  #
+  # Two statements rather than `end.call`, so `end` ends its own line. That
+  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matching `end`, and `end.call` is not that token, so the scan ran past the
+  # method and swallowed every following `# @class` tag into one block.
+  #
+  # Only a MULTI-statement body reaches here -- l-iife has already reduced a
+  # lone `return expr;` to the expression itself -- which is checked with
+  # `has: {{ nthChild: 2 }}`.
+  # The same, for an IIFE that takes PARAMETERS and is called with arguments:
+  #
+  #     const auto unsupportedCharacter = [](const QString &fName) {{
+  #         ...
+  #     }}(item->localName());
+  #
+  # Without this the lambda became a block but the call's argument list was
+  # left dangling as `end(item.local_name)`. Listed before the no-argument
+  # form so it claims the node first.
+  - id: s-iife-decl-args{t}
+    rule:
+      kind: declaration
+      {inside}
+      has:
+        field: declarator
+        kind: init_declarator
+        all:
+          - has: {{ field: declarator, stopBy: end, kind: identifier, pattern: $IAN }}
+          - has:
+              field: value
+              kind: call_expression
+              all:
+                - has: {{ field: arguments, kind: argument_list, pattern: $IAARGS }}
+                - has:
+                    field: function
+                    kind: lambda_expression
+                    all:
+                      - has:
+                          field: declarator
+                          kind: abstract_function_declarator
+                          has:
+                            field: parameters
+                            kind: parameter_list
+                            pattern: $IAP
+                            has: {{ kind: parameter_declaration }}
+                      - has:
+                          field: body
+                          kind: compound_statement
+                          pattern: $IAB
+                          has: {{ nthChild: 2 }}
+    transform:
+      IAPARAMS:
+        rewrite:
+          rewriters: [p-named, p-unnamed, p-variadic]
+          source: $IAP
+          joinBy: ", "
+      IARAW:
+        rewrite: {{ rewriters: {nxt}, source: $IAB }}
+      IABODY:
+        replace: {{ source: $IARAW, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      $IAN = lambda do |$IAPARAMS|
+      $IABODY
+      end
+      $IAN.call$IAARGS
+  - id: s-iife-decl{t}
+    rule:
+      kind: declaration
+      {inside}
+      has:
+        field: declarator
+        kind: init_declarator
+        all:
+          - has: {{ field: declarator, stopBy: end, kind: identifier, pattern: $IDN }}
+          - has:
+              field: value
+              kind: call_expression
+              has:
+                field: function
+                kind: lambda_expression
+                has:
+                  field: body
+                  kind: compound_statement
+                  pattern: $IDB
+                  has: {{ nthChild: 2 }}
+    transform:
+      IDRAW:
+        rewrite: {{ rewriters: {nxt}, source: $IDB }}
+      IDBODY:
+        replace: {{ source: $IDRAW, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      $IDN = lambda do
+      $IDBODY
+      end
+      $IDN.call
+  # `f(x, [&](const Rec &rec) {{ ... }})` -> `f(x) do |rec| ... end`
   #
   # A C++ callback passed as the last argument is Ruby's trailing block. The
   # parameter name sits under a reference_declarator inside the
@@ -1254,7 +1379,6 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
       MSCOPE:
         replace: { source: $QN, replace: '::[^:]*$', by: '' }
     fix: |-
-      # @class $MSCOPE
       $MSTRUCTS
       def $MNAME($MARGS)
       $MSTMTS
@@ -1327,7 +1451,6 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
       FNAME:
         convert: { source: $FQN, toCase: snakeCase }
     fix: |-
-      # @class $FSCOPE
       $FSTRUCTS
       def $FNAME($FMARGS)
       $FSTMTS
@@ -1390,12 +1513,33 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
       end
   # `namespace OCC { ... }` -> `module OCC ... end`, recursing into everything
   # it contains.
+  # `namespace OCC { ... }` -> `module OCC ... end`, with the CLASS emitted here
+  # too when the namespace defines one.
+  #
+  # The class used to be assembled by rubyify.py: every method carried a
+  # `# @class X` tag and a text scanner found each def's extent by counting
+  # `end` tokens. That scanner cannot be made reliable against this output --
+  # `end.call`, `lambda {`, `})` and brace blocks all break its depth count, and
+  # when it miscounted it swallowed the following tags into one method and
+  # emitted them as comments in the result.
+  #
+  # Here the class name comes from the tree: a method defined as
+  # `ProcessDirectoryJob::start` is a qualified_identifier whose `scope` is the
+  # class, so $NCLS binds to it and the wrapper is emitted once, around the
+  # whole namespace body. No tags, no scanning.
+  #
+  # One class per namespace, which is what this tree has. r-namespace-plain
+  # below covers a namespace with no qualified method at all.
   - id: r-namespace
     rule:
       kind: namespace_definition
       all:
         - has: { field: name, stopBy: end, kind: namespace_identifier, pattern: $NN }
         - has: { field: body, kind: declaration_list, pattern: $NB }
+        - has:
+            stopBy: end
+            kind: qualified_identifier
+            has: { field: scope, pattern: $NCLS }
     transform:
       NRAW:
         rewrite:
@@ -1405,7 +1549,31 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
         replace: { source: $NRAW, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
     fix: |-
       module $NN
+      class $NCLS
       $NBODY
+      end
+      end
+  # A namespace that defines no class method: free functions and types only.
+  - id: r-namespace-plain
+    rule:
+      kind: namespace_definition
+      all:
+        - has: { field: name, stopBy: end, kind: namespace_identifier, pattern: $PNN }
+        - has: { field: body, kind: declaration_list, pattern: $PNB }
+        - not:
+            has:
+              stopBy: end
+              kind: qualified_identifier
+    transform:
+      PNRAW:
+        rewrite:
+          rewriters: [r-comment-inner, r-method, r-function, r-struct, r-enum]
+          source: $PNB
+      PNBODY:
+        replace: { source: $PNRAW, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      module $PNN
+      $PNBODY
       end
   - id: r-comment-inner
     rule:
@@ -1441,7 +1609,7 @@ rewriters:
 FOOTER = '''transform:
   OUT:
     rewrite:
-      rewriters: [r-comment, r-include-local, r-include-system, r-namespace,
+      rewriters: [r-comment, r-include-local, r-include-system, r-namespace, r-namespace-plain,
                   r-method, r-function, r-struct, r-enum]
       source: $TU
 

@@ -1,42 +1,24 @@
-# Formatter-only configuration.
+# The golden harness's rubocop config.
 #
-# The transliteration pipeline emits Ruby from ast-grep fix templates, which are
-# text and carry no indentation sense. Rather than reconstruct layout in the
-# generator, `rubocop -A` normalises it at the end -- and the golden comparison
-# runs the SAME pass over golden-harness/discovery.cpp.rb, so the two sides are
-# laid out identically and the diff shows substance only.
-#
-# Only Layout cops run. Everything else is disabled on purpose: this is
-# machine-generated transliteration of C++, so Metrics, Naming and Style
-# complaints are noise, and a Style autocorrect could change meaning.
+# It INHERITS the repo's base config, which is where the plugins and the house
+# style live -- `rubocop-nathank`, `rubocop-disable_syntax` and the
+# Style/DisableSyntax ban on ternaries among them. An earlier version of this
+# file redefined everything from scratch and so silently dropped all of that;
+# the base is the authority and only the harness-specific additions belong
+# here.
 inherit_from:
+  - ../.rubocop.yml
   - .rubocop-cops.yml
 
-AllCops:
-  # Without this rubocop warns "Using Ruby 2.7 parser" and applies rules for a
-  # Ruby far older than the one in the devshell.
-  TargetRubyVersion: 3.4
-  NewCops: disable
-  DisabledByDefault: true
-  SuggestExtensions: false
-  Exclude:
-    - 'refs/**/*'
-    - 'src/**/*'
-
-Layout:
-  Enabled: true
+# `rubocop -A` is the pipeline's last pass and the same pass runs over the
+# golden, so both sides are laid out identically and the diff shows substance
+# only. These are the settings that serve THAT job and nothing else.
 
 # The generator emits one statement per line already; leave long lines alone
-# rather than have rubocop wrap transliterated C++ expressions.
+# rather than have rubocop wrap transliterated C++ expressions at arbitrary
+# points.
 Layout/LineLength:
   Enabled: false
-
-# Trailing/leading blank lines come from stripped #includes and deleted
-# conditional blocks, and tidying them is exactly what is wanted.
-Layout/EmptyLines:
-  Enabled: true
-Layout/TrailingEmptyLines:
-  Enabled: true
 
 # Not formatting: this inserts a magic comment that changes string semantics,
 # and it shifts every line so the golden diff reports a whole-file mismatch.
@@ -47,6 +29,10 @@ Layout/EmptyLineAfterMagicComment:
 
 # Generated blocks arrive with blank lines where braces and access specifiers
 # were removed; collapsing them is exactly what is wanted for the golden diff.
+Layout/EmptyLines:
+  Enabled: true
+Layout/TrailingEmptyLines:
+  Enabled: true
 Layout/EmptyLinesAroundMethodBody:
   Enabled: true
 Layout/EmptyLinesAroundClassBody:
@@ -58,15 +44,8 @@ Layout/EmptyLinesAroundBlockBody:
 Layout/EmptyLineBetweenDefs:
   Enabled: true
 
-# Alignment and indentation. Under `DisabledByDefault: true` a bare
-# `Layout: Enabled: true` is not enough -- each cop has to be named, which is
-# why generated code kept arriving with 4-space continuations and misaligned
-# closing parens.
-Layout/IndentationWidth:
-  Enabled: true
-  Width: 2
-Layout/IndentationConsistency:
-  Enabled: true
+# Alignment the generated output needs normalising on. The base sets
+# IndentationWidth and IndentationConsistency; these are the rest.
 Layout/ArgumentAlignment:
   Enabled: true
   EnforcedStyle: with_fixed_indentation
@@ -121,16 +100,9 @@ Layout/TrailingWhitespace:
   Enabled: true
 Layout/EmptyLinesAroundAccessModifier:
   Enabled: true
-
-# The generator emits operators at the START of a continuation line
-# (`&& (...)`), which is where the C++ had them. Ruby needs the operator on the
-# PRECEDING line or the continuation parses as a new statement.
 Layout/LineEndStringConcatenationIndentation:
   Enabled: true
 
-# Empty-line cops. Each has to be named individually under
-# `DisabledByDefault: true` -- `Layout: Enabled: true` does not reach them.
-#
 # EmptyLineAfterMultilineCondition is OFF. It puts a blank line between a
 # wrapped `if (...)` and its body; the golden runs the body straight on from
 # the closing paren:
@@ -158,9 +130,15 @@ Layout/EmptyLinesAroundAttributeAccessor:
 Layout/EmptyComment:
   Enabled: true
 
-
-# The one Style cop that runs, and the design depends on it.
+# The golden puts a multiline block's `{` on its own line:
 #
+#     Log.info("sync.discovery") {
+#       "Processing ..." \
+#       " | valid: ..."
+#     }
+Layout/MultilineBlockLayout:
+  Enabled: true
+
 # `scripts/rules/simplify.yml`'s s-brace-else-if normalises an `else if` chain
 # to `else { if ... }` -- pure C++, so every later rule keeps working, and the
 # emitter then needs no chain-aware rewriter (which would cost one rewriter
