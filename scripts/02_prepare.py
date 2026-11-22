@@ -71,6 +71,21 @@ def call_span(text: str, start: int) -> tuple[int, str] | None:
     return None
 
 
+def substitute(body: str, params: list[str], args: list[str]) -> str:
+    """Replace every parameter at once.
+
+    One at a time is wrong, and was the bug: `IS_PREFIX_PATH_OR_EQUAL("path",
+    "?1")` binds prefix to `"path"`, and substituting that first leaves the
+    text `"path"` in the body -- which the NEXT substitution, of the parameter
+    named `path`, then matched inside, giving `""?1""`. That is not a string
+    literal, so tree-sitter reported 103 ERROR nodes and the emitter silently
+    dropped the 23 methods that followed them.
+    """
+    binding = dict(zip(params, args))
+    pattern = re.compile(r'\b(' + '|'.join(re.escape(p) for p in params) + r')\b')
+    return pattern.sub(lambda m: binding[m.group(1)], body)
+
+
 def expand_macros(source: str) -> str:
     """Expand this file's own #define macros, then drop their definitions.
 
@@ -89,12 +104,21 @@ def expand_macros(source: str) -> str:
     for line in source.split('\n'):
         m = DEFINE.match(line)
         if m and not line.rstrip().endswith('\\'):
+            name = m.group('name')
             params = split_args(m.group('params')) if m.group('params') is not None else []
-            macros[m.group('name')] = (params, m.group('body').strip())
+            body = m.group('body').strip()
+            # An ALL_CAPS object-like macro is a named constant, and the golden
+            # keeps it as one rather than inlining its value everywhere. Turned
+            # into a declaration so the emitter sees it; a function-like macro
+            # has no Ruby form and is expanded below.
+            if not params and name.isupper() and body:
+                kept.append(f'    const auto {name} = {body};')
+                continue
+            macros[name] = (params, body)
             continue
         kept.append(line)
     if not macros:
-        return source
+        return '\n'.join(drop_conditionals(kept))
 
     text = '\n'.join(kept)
     for _ in range(8):                     # nested macros; this tree needs 2
@@ -122,16 +146,26 @@ def expand_macros(source: str) -> str:
                     out += text[m.start():end]
                     at = end
                     continue
-                expanded = body
-                for param, value in zip(params, args):
-                    expanded = re.sub(r'\b' + re.escape(param) + r'\b', lambda _, v=value: v, expanded)
-                out += expanded
+                out += substitute(body, params, args)
                 at = end
                 changed = True
             text = out + text[at:]
         if not changed:
             break
-    return text
+    return '\n'.join(drop_conditionals(text.split('\n')))
+
+
+def drop_conditionals(lines: list[str]) -> list[str]:
+    """Remove the conditionals left after the platform ones are resolved.
+
+    resolve_conditionals above keeps a conditional it cannot evaluate, which is
+    right while it is still C++ -- but by here the only ones left are include
+    guards and `#ifndef SQLITE_IOERR_SHMMAP`, and a `#ifndef` line reaching the
+    emitter comes out as Ruby that does not parse. `#include` and `#pragma` are
+    not touched.
+    """
+    pattern = re.compile(r'^[ \t]*#[ \t]*(if|ifdef|ifndef|else|elif|endif)\b')
+    return [line for line in lines if not pattern.match(line)]
 
 
 def quote(text: str) -> str:

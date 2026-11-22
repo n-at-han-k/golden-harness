@@ -68,6 +68,16 @@ module GoldenHarness
     # private method.
     def internal?(name) = internal.include?(name)
 
+    # A name declared as a local in this function rather than a member of the
+    # class, which is what decides whether a leading `_` becomes an `@`.
+    def local?(scope, name) = scope && locals.include?("#{scope}::#{name}")
+
+    # A name holding something callable: a lambda bound in this function, or a
+    # `std::function` parameter, which only the declared type reveals.
+    def callable?(function, name, scope = nil)
+      lambda?(function, name) || shape(name, scope) == "proc"
+    end
+
     # Names bound to a lambda inside this function, so a call to one emits
     # `.call` rather than reading as a method.
     def lambda?(function, name)
@@ -81,6 +91,8 @@ module GoldenHarness
       def records = @records ||= Set.new(@oracle.fetch("records", []))
 
       def internal = @internal ||= Set.new(@oracle.fetch("internal", []))
+
+      def locals = @locals ||= Set.new(@oracle.fetch("locals", []))
 
       def scan
         @cst.each_node(@cst.root) do |node|

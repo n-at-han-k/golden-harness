@@ -2,7 +2,10 @@
 
 module GoldenHarness
   class Emitter
-    LOG_CALL = /\AqC(Info|Debug|Warning|Critical|Fatal)\z/
+    # `qCInfo(lcDb)` and `qWarning(lcDb)` alike: the second is Qt's
+    # un-categorised logger being passed a category anyway, which is a slip in
+    # the source but still a log statement.
+    LOG_CALL = /\Aq[C]?(Info|Debug|Warning|Critical|Fatal)\z/
 
     # Qt names two levels differently from Ruby's logger.
     LOG_LEVEL = { "Warning" => "warn", "Critical" => "error" }.freeze

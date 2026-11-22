@@ -21,6 +21,7 @@ module GoldenHarness
     # `#include <QFile>` -> `require "qfile"`; a quoted include names a file in
     # the tree, so it is require_relative and loses its extension.
     HEADER_EXT = /\.(h|hpp|hxx)\z/
+    HEADER_EXT_BARE = /\.(h|hpp|hxx)\z/
 
     # A comment line's leader: `/*`, ` *`, ` */` or `//`.
     COMMENT_LEADER = /^[ \t]*(?:\/\*+|\/\/+|\*+\/|\*)[ \t]?/
@@ -34,6 +35,8 @@ module GoldenHarness
       @hoisted = []
       @private_members = []
       @method_name = nil
+      @class_name = nil
+      @pending_updates = nil
       @ternary_branch = {}
     end
 
@@ -56,6 +59,7 @@ module GoldenHarness
         lines = [SHEBANG]
         lines.concat(header_comment)
         requires.each { |line| lines << line }
+        usings.each { |line| lines << "" << line }
         # A blank line before the body: rubocop will not add one next to a
         # require, so it has to be written here.
         lines << ""
@@ -88,7 +92,9 @@ module GoldenHarness
         path = @cst.field(node, :path)
         text = @cst.text(path)
         if path.kind == "system_lib_string"
-          %(require "#{text.delete("<>").downcase}")
+          # `<sqlite3.h>` -> `require "sqlite3"`. A Ruby require names a
+          # library, never a header file, so the extension goes here too.
+          %(require "#{text.delete("<>").downcase.sub(HEADER_EXT_BARE, "")}")
         else
           %(require_relative "#{text.delete('"').sub(HEADER_EXT, "")}")
         end
@@ -96,6 +102,23 @@ module GoldenHarness
 
       # An include's node extent runs to the end of its line, so two adjacent
       # includes have NO newline between them and a blank line shows up as one.
+      # `using namespace Qt::Literals::StringLiterals;` -> `include ...`.
+      #
+      # A using-directive brings a namespace's names into scope, which is what
+      # `include` does with a module's. At file scope, like the C++: in the
+      # class body rubocop's EmptyLinesAfterModuleInclusion and
+      # BlankLineBetweenStatements disagree about the blank line after it and
+      # never settle.
+      def usings
+        @cst.named(@cst.root).filter_map do |node|
+          next unless node.kind == "using_declaration"
+          next unless @cst.text(node).include?("namespace")
+
+          name = @cst.text(node)[/namespace\s+([\w:]+)/, 1]
+          name && "include #{name}"
+        end
+      end
+
       def blank_between?(before, after)
         @cst.between(before.end_byte, after.start_byte).count("\n") >= 1
       end
@@ -124,6 +147,10 @@ module GoldenHarness
       def namespace(node)
         body = @cst.field(node, :body)
         named = @cst.dig(node, "namespace_identifier", field: :name)
+        # Known before the members are walked: a constructor is recognised by
+        # its name matching the class's.
+        inner = class_name(body)
+        @class_name = inner
 
         # `namespace { ... }` with no name gives its contents INTERNAL LINKAGE:
         # they are private to the translation unit. Ruby's equivalent is a
@@ -136,7 +163,6 @@ module GoldenHarness
 
         members = @hoisted + @cst.named(body).flat_map { top_level(_1) }.compact
         @hoisted = []
-        inner = class_name(body)
         members += [Call(nil, :private), *@private_members] if @private_members.any?
         @private_members = []
         [Module_(@cst.text(named), inner ? Class_(inner, Body(members)) : Body(members))]
@@ -172,10 +198,39 @@ module GoldenHarness
 
         @function = node
         @method_name = name
-        statements = statements_of(@cst.field(node, :body))
+        statements = field_initializers(node) + statements_of(@cst.field(node, :body))
         @function = nil
         @method_name = nil
-        Def(name, parameters(declarator), Body(statements))
+
+        # A constructor is `initialize`, whatever the class is called.
+        Def(name == @class_name ? "initialize" : name, parameters(declarator), Body(statements))
+      end
+
+      # The member initialiser list, which runs before the body.
+      #
+      #   SyncJournalDb::SyncJournalDb(path, parent)
+      #       : QObject(parent), _dbFile(path), _transaction(0)
+      #
+      # becomes `super(parent)` followed by one assignment per member, in the
+      # order the C++ writes them. The base-class entry is the one whose name
+      # is a type rather than a member, which is what PascalCase marks.
+      def field_initializers(node)
+        list = @cst.child(node, "field_initializer_list")
+        return [] if list.nil?
+
+        @cst.named(list).filter_map do |initialiser|
+          name = @cst.named(initialiser).first
+          next if name.nil?
+
+          values = @cst.named(@cst.child(initialiser, "argument_list") || initialiser)
+                       .filter_map { expr(_1) }
+          text = @cst.text(name)
+          if text.match?(/\A[A-Z]/)
+            Super(*values)
+          else
+            IvarSet(snake(text.sub(/\A_/, "")), values.first)
+          end
+        end
       end
 
       def method_name(declarator)

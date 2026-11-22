@@ -101,6 +101,10 @@ module GoldenHarness
 
     def Binary(left, operator, right) = n(:send, left, operator.to_sym, right)
 
+    # `0...n` -- an exclusive range, which is its own node type rather than an
+    # operator send.
+    def ExclusiveRange(from, to) = n(:erange, from, to)
+
     def OpAssign(target, operator, value) = n(:op_asgn, target, operator.to_sym, value)
 
     def LocalTarget(name) = n(:lvasgn, name.to_sym)

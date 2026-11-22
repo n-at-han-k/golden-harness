@@ -15,7 +15,7 @@ module GoldenHarness
     # A cast is not a conversion in Ruby, so it reduces to its operand.
     # `qobject_cast<T *>(x)` is spelled as a template call rather than with the
     # cast syntax, but it is the same thing and goes the same way.
-    CASTS = %w[static_cast dynamic_cast reinterpret_cast const_cast qobject_cast].freeze
+    CASTS = %w[static_cast dynamic_cast reinterpret_cast const_cast].freeze
 
     # Written as a constant so the `#{` cannot be read as interpolation here.
     INTERP_OPEN = ["#", "{"].join.freeze
@@ -31,7 +31,19 @@ module GoldenHarness
       redo rescue retry return super then undef unless until when while yield alias
     ].freeze
 
+    # What a reserved name is called instead.
+    #
+    # The default is a trailing underscore, which is mechanical. These two are
+    # not: they are the names the golden gives them, chosen for what the
+    # variable HOLDS -- `const char *end` is the last slash in a path, and
+    # `auto next` is the next row of a query. Nothing in the source says so, so
+    # they are recorded here rather than guessed.
+    RENAMES = { "end" => "last_slash", "next" => "next_row" }.freeze
+
     LITERALS = { "nil" => :Nil_, "true" => :True_, "false" => :False_ }.freeze
+
+    # Qt's "which function am I in" macro. Ruby spells it `__method__`.
+    MACROS = { "Q_FUNC_INFO" => "__method__" }.freeze
 
     private
 
@@ -50,7 +62,7 @@ module GoldenHarness
         when "update_expression" then update(node)
         when "subscript_expression" then subscript(node)
         when "string_literal", "raw_string_literal" then string_node(string_value(node))
-        when "concatenated_string" then string_node(@cst.named(node).map { string_value(_1) }.join)
+        when "concatenated_string" then concatenated(node)
         when "char_literal" then Str(char_value(node))
         when "number_literal" then number(node)
         when "true" then True_()
@@ -77,7 +89,17 @@ module GoldenHarness
       def name_node(text)
         literal = LITERALS[text]
         return send(literal) if literal
-        return Ivar(snake(text.sub(/\A_/, ""))) if text.start_with?("_")
+        # A send, not a local: `__method__` IS a method, and unparser refuses
+        # to round-trip an lvar by that name because it would reparse as one.
+        return Call(nil, MACROS[text]) if MACROS.key?(text)
+        if text.start_with?("_")
+          bare = snake(text.sub(/\A_/, ""))
+          # A local keeps its name without the underscore; a MEMBER becomes an
+          # ivar. The oracle says which -- see Facts#local?.
+          return Lvar(bare) if @facts.local?(@method_name, bare)
+
+          return Ivar(bare)
+        end
         return Sym(snake(text)) if @facts.enum_value?(text)
         return Const(text) if text.match?(/\A[A-Z]/)
 
@@ -85,8 +107,18 @@ module GoldenHarness
       end
 
       def local_name(text)
-        name = snake(text)
-        RESERVED.include?(name) ? "#{name}_" : name
+        # A LOCAL written with a leading underscore drops it; a member keeps it
+        # as the `@`. Only the oracle can tell them apart -- see Facts#local?.
+        bare = snake(text.sub(/\A_/, ""))
+        return reserved(bare) if text.start_with?("_") && @facts.local?(@method_name, bare)
+
+        reserved(snake(text))
+      end
+
+      def reserved(name)
+        return name unless RESERVED.include?(name)
+
+        RENAMES.fetch(name, "#{name}_")
       end
 
       # `A::B` -- a qualified enum constant is a symbol of its last segment, a
@@ -131,7 +163,9 @@ module GoldenHarness
           text = @cst.text(fn)
           return args.first if CASTS.include?(text) && args.one?
           return Str("") if LITERAL_WRAPPERS.include?(text) && args.empty?
-          return send_with_block(Lvar(snake(text)), :call, node, args) if @facts.lambda?(@function, text)
+          if @facts.callable?(@function, local_name(text), @method_name)
+            return send_with_block(Lvar(local_name(text)), :call, node, args)
+          end
           # `ChecksumHeader(type, sum)` / `QFileInfo(path)` -- a constructor
           # call, so the name is a class name and stays as written.
           return send_with_block(nil, text, node, args) if text.match?(/\A[A-Z]/)
@@ -144,6 +178,7 @@ module GoldenHarness
         if fn.kind == "template_function"
           name = @cst.text(@cst.dig(fn, "identifier", field: :name))
           return args.first if CASTS.include?(name) && args.one?
+          return template_call(fn, name, args) if args.one?
 
           return send_with_block(nil, name, node, args)
         end
@@ -160,6 +195,21 @@ module GoldenHarness
         end
 
         send_with_block(expr(fn), :call, node, args)
+      end
+
+      # `qobject_cast<T *>(x)` -> `qobject_cast < T > (x)`.
+      #
+      # Which is not a cast and not valid Ruby semantics -- it reads as two
+      # comparisons -- but it is what the golden carries, because the old
+      # text pipeline had no way to see the template call and left the tokens
+      # where they were. Reproduced deliberately: the golden is the
+      # specification. Treating it as a cast instead gives `job = sender`,
+      # which is what this did before.
+      def template_call(fn, name, args)
+        argument = @cst.dig(fn, "type_identifier", field: :arguments)
+        return Call(nil, name, *args) if argument.nil?
+
+        Binary(Binary(Lvar(name), :<, Const(@cst.text(argument))), :>, Paren(args.first))
       end
 
       # A Qt literal wrapper applied to one literal.
@@ -222,7 +272,9 @@ module GoldenHarness
 
       def assignment(node)
         target = @cst.field(node, :left)
-        value = expr(@cst.field(node, :right))
+        right = @cst.field(node, :right)
+        right = @cst.named(right).first || right if right.kind == "parenthesized_expression"
+        value = expr(right)
         operator = @cst.text(@cst.field(node, :operator))
         return compound_assign(target, operator, value) unless operator == "="
 
@@ -274,7 +326,21 @@ module GoldenHarness
         step = operator == "--" ? :- : :+
         return negated_update(operand, step) if negated_update?(operand)
 
-        OpAssign(assign_target(operand), step, Int(1))
+        assignment = OpAssign(assign_target(operand), step, Int(1))
+        # `query->bindValue(i++, x)` -- POSTFIX, so the call sees the old value
+        # and the increment happens afterwards. Ruby has no postfix operator,
+        # so the increment is handed to the statement being built and emitted
+        # on the next line, which is what the golden writes:
+        #
+        #   query.bind_value(i, phash)
+        #   i += 1
+        #
+        # Only in a subexpression. A bare `i++;` statement is just `i += 1`,
+        # and statement() keeps that case for itself.
+        return assignment if @pending_updates.nil?
+
+        @pending_updates << assignment
+        expr(operand)
       end
 
       def negated_update?(operand)
@@ -356,6 +422,31 @@ module GoldenHarness
         If(expr(@cst.field(node, :condition)),
            expr(@cst.field(node, :consequence)),
            expr(@cst.field(node, :alternative)))
+      end
+
+      # `"a" "b"` -- C++ concatenates adjacent literals, and the author's line
+      # breaks between them are how a long SQL statement is laid out.
+      #
+      # Kept as one Ruby literal per source line, which Ruby also concatenates
+      # and `parser` represents as nested `dstr` nodes, so the grouping reaches
+      # Transpile/MultilineString instead of being flattened to one long line.
+      def concatenated(node)
+        groups = []
+        line = nil
+        @cst.named(node).each do |literal|
+          at = @cst.line(literal)
+          groups << [] if line.nil? || at != line
+          groups.last << literal
+          line = at
+        end
+
+        parts = groups.map do |group|
+          string_node(group.map { |literal| string_value(literal) }.join)
+        end
+        return Str("") if parts.empty?
+        return parts.first if parts.one?
+
+        Dstr(parts)
       end
 
       # The literal's characters, not its spelling. A `str` node holds the

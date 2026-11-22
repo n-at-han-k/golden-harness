@@ -82,8 +82,16 @@ INTEGRAL = %i[
 def shape_of(type)
   return nil if type.nil?
 
+  # Through the typedef. `quint64` is Qt's name for an unsigned long long, and
+  # its own kind is `typedef`, so without this the integral test never fires
+  # and `!inode` stayed `!inode` instead of `inode == 0`.
+  type = canonical(type)
   spelling = type.spelling.to_s.sub(/\Aconst\s+/, "").sub(/\s*[&*]+\z/, "")
   base = spelling[/\A([A-Za-z_:][\w:]*)/, 1]
+  # A callable parameter. `rowCallback(rec)` reads as a method call in Ruby and
+  # has to be `rowCallback.call(rec)`; nothing in the syntax says which, but
+  # the declared type does.
+  return "proc" if base == "std::function" || base == "function"
   return CONTAINERS[base] if base && CONTAINERS.key?(base)
   return "bool" if type.kind == :type_bool
   return "int" if INTEGRAL.include?(type.kind)
@@ -92,12 +100,20 @@ def shape_of(type)
   nil
 end
 
+def canonical(type)
+  resolved = type.canonical
+  resolved.nil? || resolved.kind == :type_invalid ? type : resolved
+rescue NoMethodError
+  type
+end
+
 facts = {
   "enum_constants" => {},   # short name  -> owning enum
   "records" => [],          # class / struct / union names
   "internal" => [],         # functions with internal linkage -> private
   "shapes" => {},           # local name  -> empty-value shape
-  "integers" => []          # names of integral type -> `!x` is `x == 0`
+  "integers" => [],         # names of integral type -> `!x` is `x == 0`
+  "locals" => []            # function::name -> a local, not a member
 }
 
 source = ARGV[0]
@@ -202,6 +218,15 @@ visit(translation_unit.cursor, facts) do |cursor|
     # bare key is a fallback and the scoped one is what resolves it.
     facts["shapes"][snake(name)] = shape
     facts["shapes"]["#{snake(scope)}::#{snake(name)}"] = shape if scope
+    # A LOCAL, as against a member of the class. `_exec` is a local lambda and
+    # the golden drops its underscore; `_dbFile` is a member and keeps it as
+    # the `@`. Nothing in the spelling tells them apart.
+    if scope && cursor.kind == :cursor_variable
+      # Both spellings. A local written `_exec` loses the underscore in the
+      # Ruby, so that is the name the emitter looks it up by.
+      facts["locals"] << "#{snake(scope)}::#{snake(name)}"
+      facts["locals"] << "#{snake(scope)}::#{snake(name.sub(/\A_/, ""))}"
+    end
     facts["integers"] << snake(name) if shape == "int"
   end
 end
@@ -209,6 +234,7 @@ end
 facts["records"] = facts["records"].uniq.sort
 facts["internal"] = facts["internal"].uniq.sort
 facts["integers"] = facts["integers"].uniq.sort
+facts["locals"] = facts["locals"].uniq.sort
 facts["diagnostics"] = errors
 
 File.write(target, JSON.pretty_generate(facts))

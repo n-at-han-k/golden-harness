@@ -10,6 +10,8 @@ module GoldenHarness
     # raises, so the block form is required rather than cosmetic.
     MAP_TYPES = /\A(map|unordered_map|QMap|QHash)\z/
 
+    STRING_TYPES = %w[QString QByteArray QLatin1String].freeze
+
     private
 
       def statements_of(block)
@@ -88,7 +90,7 @@ module GoldenHarness
         when "while_statement" then [While(condition(node), Body(statements_of(@cst.field(node, :body))))]
         when "do_statement" then [Loop(Body(statements_of(@cst.field(node, :body))))]
         when "for_range_loop" then [for_range(node)]
-        when "for_statement" then [Loop(Body(statements_of(@cst.field(node, :body))))]
+        when "for_statement" then [counted_for(node)]
         when "switch_statement" then [switch(node)]
         when "labeled_statement" then statements_of(node)
         else [expr(node)].compact
@@ -123,11 +125,31 @@ module GoldenHarness
         name = @cst.dig(init, "identifier")
         return [] if name.nil?
 
+        local = @cst.text(name).sub(/\A_/, "")
+
+        # A constant cannot be assigned inside a method in Ruby, so it is
+        # hoisted to the class the way a struct is. 02_prepare.py turns an
+        # ALL_CAPS `#define` into one of these.
+        if @cst.text(name).match?(/\A[A-Z][A-Z0-9_]*\z/)
+          value = @cst.field(init, :value)
+          # The parens a `#define` body is written with group nothing once it
+          # is an assignment, and the golden drops them.
+          value = @cst.named(value).first if value.kind == "parenthesized_expression"
+          @hoisted << Constant(@cst.text(name), expr(value))
+          return []
+        end
+
         # `SqlQuery query(db);` -- a constructor, which the C++ spells like a
         # declaration with an argument list rather than with an `=`.
         arguments = @cst.child(init, "argument_list")
         if arguments
           values = @cst.named(arguments).filter_map { expr(_1) }
+          # `QByteArray sql("SELECT ...")` -- a Qt string built from a literal
+          # is just the literal; there is no Qt string type in Ruby. Same
+          # reasoning as the QStringLiteral wrappers.
+          return [Local(local_name(@cst.text(name)), values.first)] if
+            values.one? && STRING_TYPES.include?(@cst.text(type))
+
           return [Local(local_name(@cst.text(name)), Call(ConstPath(@cst.text(type)), :new, *values))]
         end
 
@@ -205,7 +227,10 @@ module GoldenHarness
         when "set" then Call(Const(:Set), :new)
         when "hash" then n(:hash)
         when "string" then Str("")
-        when %r{\Aobject:(.+)\z} then Call(ConstPath(::Regexp.last_match(1)), :new)
+        # The last segment only. The oracle gives a type its full name --
+        # `OCC::SyncJournalDb::DownloadInfo` -- and the golden writes the
+        # nested type as the surrounding class already sees it.
+        when %r{\Aobject:(.+)\z} then Call(Const(::Regexp.last_match(1).split("::").last), :new)
         else fallback_empty_value(node)
         end
       end
@@ -225,6 +250,10 @@ module GoldenHarness
       # a lambda and is called on the next line.
       def assign(name, value)
         return [Local(name, Nil_())] if value.nil?
+
+        # `x = (a == b);` -- the parens group nothing once it is an assignment,
+        # and the golden drops them, as it does for a `return`.
+        value = @cst.named(value).first || value if value.kind == "parenthesized_expression"
 
         reduced = iife_value(value)
         return [Local(name, reduced)] if reduced
@@ -258,6 +287,21 @@ module GoldenHarness
         inner = @cst.named(node).first
         return [] if inner.nil?
 
+        # A postfix `++` nested in this statement runs after it. `update` puts
+        # the increment here rather than in the expression, and it is emitted
+        # on the following line.
+        return [expr(inner)].compact if inner.kind == "update_expression"
+
+        deferred = []
+        @pending_updates = deferred
+        built = expression_statement_body(node, inner)
+        @pending_updates = nil
+
+        built + deferred
+      end
+
+      def expression_statement_body(node, inner)
+
         if (call = @cst.dig(inner, "call_expression"))
           name = @cst.field(call, :function)
           if name && name.kind == "identifier"
@@ -282,6 +326,9 @@ module GoldenHarness
         return Return() if value.nil?
         # `return {};` -- a default-constructed result, which carries no value.
         return Return(Nil_()) if value.kind == "initializer_list" && @cst.named(value).empty?
+        # `return (a && b);` -- the parens group nothing, and the golden drops
+        # them. MultilineCondition does the same for an `if`, but only there.
+        value = @cst.named(value).first if value.kind == "parenthesized_expression"
 
         Return(expr(value))
       end
@@ -308,6 +355,36 @@ module GoldenHarness
         collection = expr(@cst.field(node, :right))
         CallBlock(Call(collection, :each), [@cst.text(name)],
                   Body(statements_of(@cst.field(node, :body))))
+      end
+
+      # `for (int i = 0; i < n; ++i)` -> `(0...n).each do |i|`.
+      #
+      # The one counted-loop shape that has a Ruby equivalent keeping the
+      # induction variable visible. Anything else lowers to `loop do` with the
+      # init and step left in the body, which is what it did before.
+      def counted_for(node)
+        body = Body(statements_of(@cst.field(node, :body)))
+        range = for_range_of(node)
+        return Loop(body) if range.nil?
+
+        name, limit = range
+        CallBlock(Call(Paren(ExclusiveRange(Int(0), limit)), :each), [name], body)
+      end
+
+      def for_range_of(node)
+        initializer = @cst.child(node, "declaration", field: :initializer)
+        condition = @cst.field(node, :condition)
+        update = @cst.field(node, :update)
+        return nil if initializer.nil? || condition.nil? || update.nil?
+        return nil unless condition.kind == "binary_expression"
+        return nil unless @cst.text(@cst.field(condition, :operator)) == "<"
+
+        name = @cst.dig(initializer, "identifier", field: :declarator)
+        start = @cst.dig(initializer, "number_literal")
+        return nil if name.nil? || start.nil? || @cst.text(start) != "0"
+        return nil unless @cst.text(@cst.field(condition, :left)) == @cst.text(name)
+
+        [@cst.text(name), expr(@cst.field(condition, :right))]
       end
 
       # A C++ `switch` is a Ruby `case`. 03_simplify.yml has already braced
