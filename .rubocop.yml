@@ -1,6 +1,12 @@
-inherit_from:
-  - ../.rubocop.yml
-  - .rubocop-cops.yml
+# The golden harness's rubocop config, self-contained.
+#
+# `rubocop -A` is the pipeline's last pass and the SAME pass runs over
+# discovery.cpp.rb, so both sides come out laid out identically and the diff
+# shows substance only.
+
+plugins:
+  - rubocop-nathank
+  - rubocop-disable_syntax
 
 require:
   - ./cops/multiline_struct_new.rb
@@ -8,6 +14,79 @@ require:
   - ./cops/blank_line_between_statements.rb
   - ./cops/single_line_arguments.rb
   - ./cops/no_blank_line_before_branch.rb
+
+AllCops:
+  TargetRubyVersion: 3.4
+  Exclude:
+    - 'refs/**/*'
+    - 'data/**/*'
+    - 'bin/**/*'
+
+Layout/AccessModifierIndentation:
+  Enabled: true
+  EnforcedStyle: indent
+
+Layout/IndentationConsistency:
+  Enabled: true
+  EnforcedStyle: indented_internal_methods
+
+Layout/IndentationWidth:
+  Enabled: true
+  Width: 2
+
+Layout/ClassStructure:
+  Enabled: true
+  ExpectedOrder:
+    - module_inclusion
+    - constants
+    - public_attribute_macros
+    - public_delegate
+    - macros
+    - public_class_methods
+    - initializer
+    - public_methods
+    - protected_attribute_macros
+    - protected_methods
+    - private_attribute_macros
+    - private_delegate
+    - private_methods
+  Categories:
+    module_inclusion:
+      - include
+      - prepend
+      - extend
+    public_attribute_macros:
+      - attr_reader
+      - attr_writer
+      - attr_accessor
+    macros:
+      - type_register
+      - install_property
+      - gtk_accessor
+      - signal_connect
+      - set_accels_for_action
+      - add_action
+      - bind_property
+      - add_setter
+    public_delegate:
+      - delegate
+    protected_attribute_macros:
+      - attr_reader
+      - attr_writer
+      - attr_accessor
+    private_attribute_macros:
+      - attr_reader
+      - attr_writer
+      - attr_accessor
+    private_delegate:
+      - delegate
+
+# Bans the ternary. The pipeline must therefore not EMIT one: this cop only
+# reports, it does not autocorrect, so the expansion into if/else lives in
+# scripts/rules/simplify.yml (s-ternary-decl, s-ternary-assign, s-ternary-arg).
+Style/DisableSyntax:
+  DisableSyntax:
+    - ternary
 
 Layout/LineLength:
   Enabled: false
