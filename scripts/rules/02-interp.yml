@@ -1,49 +1,3 @@
-# Qt's `%1` placeholders -> Ruby string interpolation.
-#
-#   tr("Server replied ... »%1«: %2").arg(_currentFolder._server, results.error().message)
-#     ->  "Server replied ... »#{@current_folder.server}«: #{results.error.message}"
-#
-# `tr(...)` is already gone by the time this runs -- s-qt-string-wrapper
-# unwraps it in the simplify stage -- so the receiver here is a plain string
-# literal. `"...".arg(x)` is not meaningful C++, but tree-sitter parses it
-# cleanly as a call_expression over a field_expression whose argument is the
-# string, which is all a rule needs.
-#
-# WHY ITS OWN STAGE, and not a rule in simplify.yml
-# -------------------------------------------------
-# Baking an expression into a string literal FREEZES it: once `job->foo()` is
-# text inside `"...#{job->foo()}"`, no later AST rule can see it. Two stages
-# care about that:
-#
-#   * s-snake-identifier, in simplify.yml, snake_cases identifiers on the TREE.
-#     It and this rule match overlapping nodes -- the identifier sits inside the
-#     call -- and on an overlap ast-grep keeps the OUTER match, so running both
-#     in one scan would silently discard the renaming and emit
-#     `#{job->httpStatusCode()}`. Running after the simplify fixpoint means the
-#     identifiers are already snake_cased when they are baked in.
-#
-#   * rubyify.py's naming pass is TEXTUAL and so still reaches inside the
-#     string: `->` becomes `.` (rubyify.py:131), `_member` becomes `@member`
-#     (:142), and a trailing `()` is stripped (:193). That is what finishes
-#     `#{job->http_status_code()}` into `#{job.http_status_code}`.
-#
-# WHY THE STRING IS SPLIT RATHER THAN SUBSTITUTED
-# -----------------------------------------------
-# `replace`'s `by` field cannot reference a meta-variable. Per
-# reference/yaml/transformation.md it takes only the named capture groups of
-# that same transformation's own `replace` regex -- "you can only extract regex
-# capture groups in the `replace` field ... and you can only reference them in
-# the `by` field of the same transformation". Measured: `by: '#{$A1}'` emits a
-# literal `#{}`.
-#
-# So the placeholders are not substituted. The string is CUT at them instead --
-# PRE/MID/POST, by the "Multiple Sequential Transformations" idiom from
-# guide/rewrite/transform.md -- and `fix`, where meta-variables DO expand,
-# reassembles it with the arguments interleaved.
-#
-# `$SC` is the string_content node, so the quotes are not part of it and the
-# fix supplies its own. Each `%N` is assumed to appear once, which holds for
-# every Qt format string in this file.
 id: s-qt-arg-interp-1
 language: cpp
 severity: hint
@@ -72,7 +26,6 @@ transform:
     replace: { source: $SC, replace: '^[\s\S]*%1', by: '' }
 fix: '"$PRE#{$A1}$POST"'
 ---
-# Two placeholders. `%1` and `%2` cut the string into three pieces.
 id: s-qt-arg-interp-2
 language: cpp
 severity: hint
@@ -104,21 +57,6 @@ transform:
     replace: { source: $SC, replace: '^[\s\S]*%2', by: '' }
 fix: '"$PRE#{$A1}$MID#{$A2}$POST"'
 ---
-# A STRING LITERAL argument is spliced as its own text, not interpolated.
-#
-# `.arg("/", msg)` must not become `»#{"/"}«`. That is valid Ruby but it also
-# puts a `"` inside a C++ string literal, which ENDS the literal: the next
-# round of the pipeline would re-parse the file with the string cut in half.
-# Splicing the literal's string_content keeps the quotes balanced and reads as
-# the golden does -- `»/«`.
-#
-# This shape exists because s-ternary-arg duplicates the statement per branch
-# of `_currentFolder._server.isEmpty() ? QStringLiteral("/") : _currentFolder._server`,
-# so one branch has a literal where the other has an expression.
-#
-# Listed after the generic rules and made disjoint from them by their
-# `not: { kind: string_literal }` guards, so no two rules can contend for the
-# same node.
 id: s-qt-arg-interp-2-literal-first
 language: cpp
 severity: hint

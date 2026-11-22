@@ -1,33 +1,10 @@
 #!/usr/bin/env python3
-"""Make discovery.cpp parseable by tree-sitter. Self-contained preprocessing.
-
-tree-sitter has no preprocessor, so three things in the source derail the parse
-before any rule can run. All three are textual by necessity: the file does not
-parse until they are fixed, so there is no tree to work on.
-
-1. Qt declaration macros. `class OPENCLOUD_SYNC_EXPORT Account` makes
-   tree-sitter read the MACRO as the class name and demote the whole class to a
-   function_definition. A bare `Q_OBJECT` becomes a field_declaration whose
-   bitfield_clause swallows the next member.
-
-2. Platform conditionals. Not many in this file, but `#if defined(Q_OS_WIN)`
-   branches define the same functions as their #else, so keeping both produces
-   duplicates.
-
-3. Function-like macros whose expansion is not an expression. discovery.cpp uses
-   OC_ASSERT (a statement) and Q_LOGGING_CATEGORY (a declaration).
-
-Measured on discovery.cpp: 14 ERROR nodes before, 0 after.
-"""
 from __future__ import annotations
 
 import pathlib
 import re
 import sys
 
-# Section macros introduce a run of signals/slots; C++ has no per-member
-# spelling for that, so the section flattens to an access specifier and each
-# member inside it is tagged individually.
 SECTION = re.compile(
     r'^(?P<indent>[ \t]*)'
     r'(?:(?P<access>public|private|protected)\s+)?'
@@ -42,8 +19,6 @@ QOBJECT_HOIST = re.compile(
     r'(?P<head>\b(?:class|struct)\s+)(?P<rest>[^{;]*\{\s*)'
     r'(?P<macro>Q_OBJECT|Q_GADGET)\b[ \t]*;?[ \t]*\n')
 
-# Declaration-shaped macros: keep the arguments, give the attribute something
-# legal to attach to.
 CARRIER = re.compile(
     r'^(?P<indent>[ \t]*)(?P<macro>Q_LOGGING_CATEGORY|Q_DECLARE_LOGGING_CATEGORY'
     r'|Q_ENUM|Q_ENUMS|Q_FLAG|Q_FLAGS|Q_DECLARE_METATYPE|Q_DECLARE_FLAGS'
@@ -52,7 +27,6 @@ QPROPERTY = re.compile(r'^(?P<indent>[ \t]*)Q_PROPERTY\s*\((?P<args>.*)\)\s*$')
 
 DROP_TOKENS = re.compile(r'\b(?:Q_DECL_[A-Z_]+|Q_REQUIRED_RESULT|Q_EMIT|Q_INVOKABLE)\b')
 
-# Platform guards: keep the Linux branch.
 PLATFORM_ON = {"Q_OS_LINUX", "Q_OS_UNIX", "__linux__", "__unix__", "Q_CC_GNU"}
 PLATFORM_OFF = {"Q_OS_WIN", "Q_OS_WIN32", "Q_OS_WINDOWS", "_WIN32", "_WIN64",
                 "Q_OS_MAC", "Q_OS_MACOS", "Q_OS_DARWIN", "__APPLE__",
@@ -65,12 +39,6 @@ def quote(text: str) -> str:
 
 
 def resolve_conditionals(lines: list[str]) -> list[str]:
-    """Keep the Linux branch of each platform #if, drop the others.
-
-    A hand-rolled resolver rather than unifdef, so this directory depends on
-    nothing outside itself. It only understands the guards it is given and
-    leaves every other directive alone.
-    """
     out: list[str] = []
     # stack of (is_platform_conditional, keeping_now, already_taken)
     stack: list[tuple[bool, bool, bool]] = []

@@ -27,12 +27,6 @@ import re
 import sys
 
 
-# Misspellings in discovery.cpp that the golden spells correctly. Listed so
-# the correction is a declared decision rather than an invisible one.
-
-# PascalCase class names only. Methods are NOT listed here: every camelCase
-# method snake_cases, including Qt's -- `QTimer::singleShot` becomes
-# `QTimer.single_shot`. Keeping a method name here was a violation of the rule.
 KEEP = {
     "QTimer", "QFile", "QFileInfo", "QString", "QByteArray", "QUrl", "QObject",
     "QDateTime", "QVariant", "QStringList", "QJsonObject", "QThreadPool",
@@ -41,16 +35,6 @@ KEEP = {
     "Struct", "Hash", "Array", "String", "Integer", "Float", "Log", "Entry",
     "true", "false", "nil", "self", "new",
 }
-
-# No is/has -> `?` conversion. The golden keeps the prefix on both sides:
-#   is_hidden = e.local_entry&.is_hidden
-# An earlier version converted them and produced `hidden? = ...`, which is a
-# syntax error, since a `?` cannot appear in a Ruby local variable name.
-# `?` is added only through METHOD_MAP, for the query methods whose Ruby
-# spelling carries one.
-
-# Qt/STL method names with a direct Ruby equivalent. The golden shows
-# `filename.start_with?('.')` for what C++ writes as a QLatin1Char comparison.
 
 def snake(name: str) -> str:
     if "_" in name and not re.search(r"[a-z][A-Z]", name):
@@ -61,34 +45,10 @@ def snake(name: str) -> str:
 
 
 def rename(name: str) -> str:
-    """Plain snake_case. No predicate `?`, no Qt-to-Ruby method mapping.
-
-    The golden keeps the C++ names: `is_hidden`, `is_directory`, `is_valid`,
-    `is_sym_link`, `starts_with`. Exactly one `?` appears in the whole golden,
-    against a dozen `is_*` names that keep their prefix, so a predicate rule
-    would be wrong far more often than right.
-
-    It also cannot be applied safely: a `?` is legal in a Ruby method name but
-    not in a local variable or a parameter, so an `isHidden` local became
-    `hidden? = ...` and the file stopped parsing. A Qt method map was removed
-    for a related reason -- `at -> []` rewrote the licence text
-    "(at your option)" into "([] your option)".
-    """
     return name if name in KEEP else snake(name)
 
 
 def apply_log_categories(text: str, categories: dict[str, str]) -> str:
-    """`Log.info(lcDisco)` -> `Log.info("sync.discovery")`.
-
-    All that is left of the old fold_log_streams. The `<<` chain itself is now
-    folded by transform.yml's s-log rewriter, structurally, over the
-    binary_expression tree -- the text regex that used to do it was bounded to
-    one line and silently left a wrapped chain as raw C++.
-
-    What remains here is not a code transformation but a LOOKUP: the category
-    identifier is declared once per file by Q_LOGGING_CATEGORY, so resolving it
-    needs the whole file, and the value is a plain substitution.
-    """
     for ident, name in categories.items():
         text = re.sub(r"(Log\.\w+)\(" + re.escape(ident) + r"\)",
                       lambda m: f'{m.group(1)}("{name}")', text)
@@ -96,7 +56,6 @@ def apply_log_categories(text: str, categories: dict[str, str]) -> str:
 
 
 def log_categories(text: str) -> dict[str, str]:
-    """lcDisco -> "sync.discovery", from the Q_LOGGING_CATEGORY declaration."""
     out = {}
     for m in re.finditer(r'q_logging_category\("([^,]+),\s*\\?"([^"\\]+)\\?"', text):
         out[m.group(1).strip()] = m.group(2)
@@ -106,9 +65,6 @@ def log_categories(text: str) -> dict[str, str]:
 
 
 def apply_naming(text: str) -> str:
-    # Comments are protected from the naming pass entirely. It is textual, so
-    # without this the licence header gets snake_cased and method-mapped --
-    # observed as "(at your option)" turning into "([] your option)".
     shelf: list[str] = []
 
     def shelve(m: re.Match) -> str:
@@ -116,43 +72,23 @@ def apply_naming(text: str) -> str:
         return f"\x00C{len(shelf) - 1}\x00"
 
     text = re.sub(r"(?m)^\s*#.*$", shelve, text)
-
-
-    # Log streams first: the fold needs the original call and operand names,
-    # before snake_casing rewrites them.
     text = apply_log_categories(text, log_categories(text))
-
-    # Drop the carrier declarations prepare.py left for the Qt macros.
     text = re.sub(r"^.*__qt_macro_\d+__\(\).*$\n?", "", text, flags=re.M)
-
-    # `a->b` is `a.b` in Ruby. Done before the member rule, so the arrow does
-    # not survive next to an @-prefixed name.
     text = text.replace("->", ".")
-
-    # `NormalQuery` as a bare PascalCase operand of a comparison is an enum
-    # value; the golden writes those as symbols.
     text = re.sub(r"(==|!=)\s+([A-Z][a-zA-Z0-9]*)\b",
                   lambda m: f"{m.group(1)} :{snake(m.group(2))}"
                   if m.group(2) not in KEEP else m.group(0), text)
     text = re.sub(r"=\s+([A-Z][a-z][a-zA-Z0-9]*)\s*$",
                   lambda m: f"= :{snake(m.group(1))}"
                   if m.group(1) not in KEEP else m.group(0), text, flags=re.M)
-
-    # Members: `_currentFolder` -> `@current_folder`.
     text = re.sub(r"(?<![\w.@])_([A-Za-z]\w*)",
                   lambda m: "@" + snake(m.group(1)), text)
 
-    # Field access drops the underscore: `@current_folder.server`.
     text = re.sub(r"\.@?_?([A-Za-z]\w*)",
                   lambda m: "." + rename(m.group(1)), text)
 
-    # `QTimer::singleShot` -> `QTimer.singleShot`.
     text = re.sub(r"\b([A-Z]\w*)::([a-z]\w*)", r"\1.\2", text)
 
-    # Parameter lists first, and WITHOUT the predicate rule: `is_directory` is
-    # a legal parameter name but `directory?` is not -- a `?` cannot appear in a
-    # Ruby parameter. The golden passes `is_hidden` as an argument, confirming
-    # the plain snake_case form.
     def params(m: re.Match) -> str:
         names = [snake(a.strip()) if a.strip() not in KEEP else a.strip()
                  for a in m.group(2).split(",") if a.strip()]
@@ -160,42 +96,21 @@ def apply_naming(text: str) -> str:
     text = re.sub(r"^(\s*def [a-z_][a-zA-Z0-9_?!]*)\(([^)]*)\)",
                   params, text, flags=re.M)
 
-    # Remaining camelCase identifiers. The lookahead includes `,` and `)` so
-    # arguments inside a call are renamed too, not just the callee.
     text = re.sub(r"\b[a-z][a-zA-Z0-9]*(?=\s*[(.,)\s])",
                   lambda m: rename(m.group(0)), text)
 
-    # A continuation line must not BEGIN with a binary operator. C++ wraps
-    # long conditions that way:
-    #     !a.should_discover_locally(x)
-    #     && (y == z || !a.should_discover_locally(w))
-    # but Ruby ends the statement at the first complete expression, so the
-    # second line is `Lint/Syntax: unexpected token &&`. That made the whole
-    # file unparseable for rubocop -- which means NO cop ran on it at all, and
-    # every layout cop looked like it was being ignored. The operator moves to
-    # the end of the preceding line.
     text = re.sub(r"\n[ \t]*(&&|\|\||\+|-|\*|/|==|!=|<=|>=|<|>|\.)(?=[ \t])",
                   lambda m: " " + m.group(1), text)
 
-    # Ruby has no statement terminator. A handful of semicolons survive where
-    # the `;` is a SIBLING of the rewritten node rather than part of it -- after
-    # a struct_specifier, for example -- so no rewriter can consume it.
     text = re.sub(r";\s*$", "", text, flags=re.M)
-
-    # Restore the shelved comments untouched.
     text = re.sub(r"\x00C(\d+)\x00", lambda m: shelf[int(m.group(1))], text)
-
-    # Ruby omits parens on a zero-argument call, and so does the golden:
-    # `start_async_server_query`, not `start_async_server_query()`. Applied to
-    # EVERY zero-arg call and definition, PascalCase included -- `QChar()` and
-    # `Q_UNREACHABLE()` were the only holdouts when this was restricted to
-    # lowercase names.
     text = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*[?!]?)\(\)", r"\1", text)
 
     return text
 
 
 SHEBANG = "#!/usr/bin/env ruby"
+
 
 
 def main() -> int:
@@ -219,3 +134,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

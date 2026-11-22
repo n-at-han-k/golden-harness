@@ -1,93 +1,18 @@
 #!/usr/bin/env python3
-"""Generate golden-harness/transform.yml -- the single C++ -> Ruby rule.
-
-Why one rule and not a series of passes
----------------------------------------
-Every ast-grep pass needs parseable C++ on its input. The moment a pass emits
-Ruby, the file stops being C++ and no later pass can see inside it. This is not
-theoretical -- it is the bug that made an earlier three-pass emitter silently
-produce nothing:
-
-    pass 20 rewrote `// comment` to `# comment`
-    ... but `#` at the start of a line is a PREPROCESSOR DIRECTIVE in C++,
-    so the file filled with ERROR nodes
-    ... so pass 21 (methods) matched nothing at all, and the bodies came out
-    as raw C++ with braces and semicolons intact
-
-`require_relative "discovery.h"` is not valid C++ either, so include rewriting
-has the same problem. Both have to happen in the same rewrite as everything
-else.
-
-So: ONE rule rooted at translation_unit, with every construct as a rewriter.
-Precedence is then well defined (list order decides ties, outer match wins) and
-exactly one rewrite is applied to the file.
-
-Why generated rather than hand-written
---------------------------------------
-Statement rewriters must be TIERED by nesting depth. ast-grep has no cycle
-guard, so a rewriter that lists itself overflows the stack -- observed as
-`thread 'main' has overflowed its stack`. Each tier delegates to the next, which
-terminates. Writing seven near-identical tiers by hand invites drift, so they
-are generated.
-
-Two invariants the generated rules must preserve:
-
-  * Every rewriter is constrained with `inside: {kind: ...}` (immediate parent,
-    no stopBy). Without it a nested statement matches at every enclosing level
-    and the overlapping edits lose content.
-  * NO rewriter uses `joinBy`. Per guide/rewrite/rewriter.md, ast-grep's
-    default is to "generate the new rewritten string by replacing the text in
-    the matched sub nodes" -- that is, the surrounding text is PRESERVED and
-    only matches are substituted. `joinBy` switches to joining the matches and
-    throwing the rest away.
-
-    An earlier version set `joinBy: "\n"` everywhere, which silently deleted
-    every statement, comment and blank line that no rewriter happened to match,
-    and needed a CXX_UNMAPPED catch-all to notice. Dropping joinBy removes both
-    the data loss and the need for the catch-all: an unhandled construct simply
-    stays as C++ in the output, where it is obvious.
-
-Usage:
-    python3 golden-harness/build_transform.py
-"""
 from __future__ import annotations
 
 import pathlib
 
 HERE = pathlib.Path(__file__).resolve().parent
-# Statement nesting depth. Measured on the simplified C++, not guessed: the
-# deepest statement in discovery.cpp sits 9 tiers inside its method body. It is
-# deeper than the source looks because three normalisations each add a level --
-# `else if` -> `else { if }`, `switch` -> case, and a braced case body -- so a
-# plain read of the C++ understates it. The cost of headroom is generated YAML
-# and nothing else; the cost of too little is statements silently left as C++
-# at the deepest tier, which is what capped handle_excluded at tier 7.
 DEPTH = 12
-
-# Order matters: the idiom rules come FIRST so they win over the generic
-# declaration and expression rules, which would otherwise match the same nodes.
-# s-log precedes s-expr: a `qCInfo(lcDisco) << ...` statement is also an
-# expression_statement, and the first matching rewriter in the list wins.
 STMT_LEAVES = ["s-struct", "s-map-decl", "s-assert", "s-unreachable",
                "s-decl", "s-decl-bare", "s-log", "s-expr", "s-return",
                "s-return-void", "s-next", "s-break"]
-# s-lambda-call is a BLOCK, not a leaf: it rewrites the lambda's body through
-# {nxt}, so it can only exist while a next tier does. It must also come FIRST,
-# ahead of s-expr -- a call with a trailing lambda is also an
-# expression_statement, and the first matching rewriter in the list wins.
-# s-case-pair and s-case-absorbed precede s-case: a fall-through label pair is
-# also a plain case, and the first matching rewriter in the list wins.
 STMT_BLOCKS = ["s-if-else", "s-if", "s-while", "s-foreach", "s-for",
                "s-switch", "s-case-pair", "s-case-absorbed", "s-case",
                "s-default", "s-block"]
 
 
-# Ordered BEFORE the leaves, but dropped at the deepest tier like the blocks.
-#
-# An IIFE declaration is also a plain declaration, so it has to beat s-decl in
-# the rewriter list -- the first match wins, and the leaves are listed first --
-# while its own rule delegates to the next tier and so cannot exist where there
-# is none.
 STMT_FIRST = ["s-iife-decl-args", "s-iife-decl"]
 
 
@@ -102,28 +27,14 @@ def statement_tier(tier: int) -> str:
     t = f"-{tier}"
     last = tier >= DEPTH
     nxt = stmt_ids(tier + 1, leaves_only=(tier + 1 >= DEPTH)) if not last else None
-    # The NEXT tier's expression rewriters.
-    #
-    # A rewriter that emits a captured argument list must rewrite it, or nothing
-    # inside is ever processed: l-new emitted `$NT.new$NA` and l-lcall
-    # `$LNAME.call$LCARGS` with the list verbatim, which left enum values as
-    # bare constants and a nested lambda call without its `.call`. It has to be
-    # the NEXT tier's list, not this one's, because this one contains the
-    # rewriter doing the asking and ast-grep has no cycle guard -- a
-    # self-referencing rewriter overflows the stack.
     expr_rw_nxt = (f"[l-iife-{tier + 1}, l-new-{tier + 1}, l-new0-{tier + 1}, "
                    f"l-brace-init-{tier + 1}, l-addr-{tier + 1}, "
                    f"l-lcall-{tier + 1}, l-lbare-{tier + 1}, "
                    f"l-enum-{tier + 1}, l-enum-value-{tier + 1}]"
                    if not last
-                   # At the deepest tier there is no next list, so fall back to
-                   # the two rewriters that do not themselves descend into an
-                   # argument list and so cannot recurse.
                    else f"[l-enum-{tier}, l-enum-value-{tier}]")
 
     inside = "inside: { kind: compound_statement }"
-    # Expression-position rewriters. l-call only exists while a next tier does,
-    # since it rewrites the lambda body through it.
     expr_rw = (f"[l-iife-{tier}, l-call-{tier}, l-call0-{tier}, "
                f"l-lambda-arg-{tier}, l-lambda0-arg-{tier}, "
                f"l-lambda-{tier}, l-lambda0-{tier}, l-call-brace-{tier}, "
@@ -136,12 +47,6 @@ def statement_tier(tier: int) -> str:
                     f"l-lbare-{tier}, l-enum-{tier}, l-enum-value-{tier}]")
 
     out = f"""  # ---- statement tier {tier} ----------------------------------------------
-  # `struct Entries {{ A a; B b; }};` -> `Entries = Struct.new(:a, :b, keyword_init: true)`
-  #
-  # Emitted HERE, not in the simplify stage: the fix is Ruby, so producing it
-  # earlier stops the file parsing as C++ and this rule's own catch-all then
-  # swallows it. keyword_init: true is what makes `Entry.new` with no arguments
-  # work, which the golden relies on.
   - id: s-struct-field{t}
     rule:
       kind: field_declaration
@@ -1624,8 +1529,6 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
           source: $SB
           joinBy: ", "
     fix: "$SN = Struct.new($SFIELDS, keyword_init: true)"
-  # An enum becomes a module of symbols; the golden compares against
-  # :normal_query, so the VALUES are symbols rather than integers.
   - id: r-enumerator
     rule:
       kind: enumerator
@@ -1647,25 +1550,6 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
       module $EN
       $EVALS
       end
-  # `namespace OCC { ... }` -> `module OCC ... end`, recursing into everything
-  # it contains.
-  # `namespace OCC { ... }` -> `module OCC ... end`, with the CLASS emitted here
-  # too when the namespace defines one.
-  #
-  # The class used to be assembled by rubyify.py: every method carried a
-  # `# @class X` tag and a text scanner found each def's extent by counting
-  # `end` tokens. That scanner cannot be made reliable against this output --
-  # `end.call`, `lambda {`, `})` and brace blocks all break its depth count, and
-  # when it miscounted it swallowed the following tags into one method and
-  # emitted them as comments in the result.
-  #
-  # Here the class name comes from the tree: a method defined as
-  # `ProcessDirectoryJob::start` is a qualified_identifier whose `scope` is the
-  # class, so $NCLS binds to it and the wrapper is emitted once, around the
-  # whole namespace body. No tags, no scanning.
-  #
-  # One class per namespace, which is what this tree has. r-namespace-plain
-  # below covers a namespace with no qualified method at all.
   - id: r-namespace
     rule:
       kind: namespace_definition
@@ -1723,15 +1607,6 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
 """
 
 HEADER = '''# C++ -> Ruby transformation, generated by golden-harness/build_transform.py.
-# Do not edit by hand; edit the generator.
-#
-# ONE rule, rooted at translation_unit, because every ast-grep pass needs
-# parseable C++ input and the first pass to emit Ruby destroys that for all the
-# rest. A `# comment` and a `require_relative "x.h"` are both invalid C++ -- `#`
-# at line start is a preprocessor directive -- so comment and include rewriting
-# cannot precede the structural rules. They are rewriters here instead.
-#
-# Target: golden-harness/discovery.cpp.rb, compared by golden-harness/compare.py.
 id: cpp-to-ruby
 language: cpp
 severity: hint

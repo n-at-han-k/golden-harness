@@ -1,29 +1,3 @@
-# Collapse write-through reference aliases. MUST run before simplify.yml.
-#
-# C++ names an lvalue to write through it:
-#
-#     auto &dbEntry = entries[rec.name()].dbEntry;
-#     dbEntry = rec;
-#
-# which assigns INTO the map, because `auto &` is a reference. Ruby has no
-# such thing, so the two statements have to become one:
-#
-#     entries[rec.name].db_entry = rec
-#
-# No type knowledge is needed -- the `&` is right there in the syntax as a
-# reference_declarator, and `const` is the discriminator:
-#
-#     auto &x = expr;        write-through  -> collapse
-#     const auto &x = expr;  read-only name -> leave alone (becomes x = expr)
-#
-# Measured over src/: 41 `auto &` declarations, 20 of them with an initialiser.
-#
-# This runs as its OWN pass, ahead of rules/simplify.yml, because simplify
-# strips every reference_declarator -- it would destroy the `&` that identifies
-# the alias before this rule ever saw it.
-#
-# `follows` binds $NAME in both the match and the preceding declaration, so the
-# rule fires only when the assignment target IS the alias.
 id: a-alias-write-through
 language: cpp
 severity: hint
@@ -50,9 +24,6 @@ rule:
             - has: { field: value, pattern: $TARGET }
 fix: "$TARGET = $RHS;"
 ---
-# The alias declaration itself, now redundant. Matched by what FOLLOWS it, so
-# only an alias that is actually written through is removed -- a `auto &` used
-# read-only keeps its declaration.
 id: a-alias-decl
 language: cpp
 severity: hint
@@ -75,8 +46,3 @@ rule:
           has: { field: left, kind: identifier, pattern: $ANAME }
 fix: ""
 ---
-# NOTE: a rule that rewrote `f.first`/`f.second` into `f_first`/`f_second` and
-# destructured the block parameters was tried here and removed. `f.first` and
-# `f.second` read correctly in Ruby on the yielded pair, so there is nothing to
-# transform -- the loop stays `entries.each do |f|` with the members used as
-# written.
