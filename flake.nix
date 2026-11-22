@@ -61,8 +61,8 @@
         # An interface to `go-task`, nothing more. The pipeline has exactly one
         # definition -- the `default` task in Taskfile.yaml -- and this hands it
         # a SRC and takes the file it leaves in tmp/.
-        cpp2rb = pkgs.writeShellApplication {
-          name = "cpp2rb";
+        golden-harness = pkgs.writeShellApplication {
+          name = "golden-harness";
           runtimeInputs = [
             gems
             gems.wrappedRuby
@@ -71,15 +71,15 @@
             pkgs.go-task
             pkgs.coreutils
           ];
-          meta.mainProgram = "cpp2rb";
+          meta.mainProgram = "golden-harness";
           text = /* bash */ ''
             if [ "$#" -ne 2 ]; then
-              echo "usage: cpp2rb <input.cpp> <output.rb>" >&2
+              echo "usage: golden-harness <input.cpp> <output.rb>" >&2
               exit 2
             fi
 
             if [ ! -r "$1" ]; then
-              echo "cpp2rb: cannot read $1" >&2
+              echo "golden-harness: cannot read $1" >&2
               exit 1
             fi
 
@@ -89,7 +89,7 @@
             case $1 in
               *.cpp | *.cc | *.cxx | *.h | *.hpp) ;;
               *)
-                echo "cpp2rb: $1 is not a C++ source or header" \
+                echo "golden-harness: $1 is not a C++ source or header" \
                      "(.cpp .cc .cxx .h .hpp)" >&2
                 exit 2
                 ;;
@@ -116,19 +116,19 @@
             # read-only under `nix run`.
             export XDG_CACHE_HOME="$work/.cache"
 
-            # RUBOCOP replaces `bundle exec rubocop`: the store copy has no
-            # Gemfile for bundler to resolve against, but the bundlerEnv
-            # wrapper is already on PATH.
-            #
             # The task ends by diffing against <SRC>.rb. An arbitrary input has
             # no golden, so that last step is expected to fail and its exit
             # status is not this CLI's -- the Ruby is produced by the stage
             # before it. Whether the file appeared is the real test.
-            go-task "SRC=$input" RUBOCOP=rubocop || true
+            #
+            # `bundle exec rubocop` resolves against the Gemfile and Gemfile.lock
+            # copied into $work, with the gems already on PATH from the
+            # bundlerEnv.
+            go-task "SRC=$input" || true
 
             result=tmp/libsync/discovery.cpp.rb
             if [ ! -f "$result" ]; then
-              echo "cpp2rb: the pipeline produced no output for $input" >&2
+              echo "golden-harness: the pipeline produced no output for $input" >&2
               exit 1
             fi
             cp "$result" "$output"
@@ -136,12 +136,12 @@
         };
       in
       {
-        packages.default = cpp2rb;
-        packages.cpp2rb = cpp2rb;
+        packages.default = golden-harness;
+        packages.golden-harness = golden-harness;
 
         apps.default = {
           type = "app";
-          program = "${cpp2rb}/bin/cpp2rb";
+          program = "${golden-harness}/bin/golden-harness";
         };
 
         devShells.default = lib.mkRubyShell {
