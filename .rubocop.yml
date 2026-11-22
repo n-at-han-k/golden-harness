@@ -16,6 +16,7 @@ require:
   - ./cops/no_blank_line_before_branch.rb
   - ./cops/disable_syntax_ternary_autocorrect.rb
   - ./cops/constants_first.rb
+  - ./cops/no_conditional_assignment_parens.rb
 
 AllCops:
   TargetRubyVersion: 3.4
