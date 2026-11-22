@@ -58,9 +58,8 @@
           ];
         };
 
-        # An interface to `go-task`, nothing more. The pipeline has exactly one
-        # definition -- the `default` task in Taskfile.yaml -- and this hands it
-        # a SRC and takes the file it leaves in tmp/.
+        # One-shot CLI: run the pipeline on an arbitrary C++/header file and
+        # write the generated Ruby to the requested output path.
         golden-harness = pkgs.writeShellApplication {
           name = "golden-harness";
           runtimeInputs = [
@@ -83,9 +82,6 @@
               exit 1
             fi
 
-            # prepare.py and rubyify.py both select on the extension, so an
-            # unrecognised one is skipped rather than failing, and the task
-            # would end with nothing produced. Say so here instead.
             case $1 in
               *.cpp | *.cc | *.cxx | *.h | *.hpp) ;;
               *)
@@ -95,43 +91,18 @@
                 ;;
             esac
 
-            # go-task runs with $work as its CWD, so both paths must be
-            # absolute before the cd.
             input=$(realpath "$1")
             mkdir -p "$(dirname "$2")"
             output=$(realpath -m "$2")
 
-            # The pipeline needs a WRITABLE tree rooted where sgconfig.yml and
-            # .rubocop.yml live: build_transform.py writes
-            # scripts/transform.yml, every ast-grep stage rewrites tmp/ in
-            # place, and both configs resolve ruleDirs/require relative to
-            # themselves.
             work=$(mktemp -d)
             trap 'rm -rf "$work"' EXIT
             cp -R ${harnessSrc}/. "$work/"
             chmod -R u+w "$work"
             cd "$work"
 
-            # rubocop wants somewhere to write its cache; $HOME may be unset or
-            # read-only under `nix run`.
             export XDG_CACHE_HOME="$work/.cache"
-
-            # The task ends by diffing against <SRC>.rb. An arbitrary input has
-            # no golden, so that last step is expected to fail and its exit
-            # status is not this CLI's -- the Ruby is produced by the stage
-            # before it. Whether the file appeared is the real test.
-            #
-            # `bundle exec rubocop` resolves against the Gemfile and Gemfile.lock
-            # copied into $work, with the gems already on PATH from the
-            # bundlerEnv.
-            go-task "SRC=$input" || true
-
-            result=tmp/libsync/discovery.cpp.rb
-            if [ ! -f "$result" ]; then
-              echo "golden-harness: the pipeline produced no output for $input" >&2
-              exit 1
-            fi
-            cp "$result" "$output"
+            python3 scripts/05_validate.py --oneshot "$input" --output "$output"
           '';
         };
       in

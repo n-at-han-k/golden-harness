@@ -26,8 +26,8 @@ and hands the result here:
 
     task                                      the pipeline, ending in this
     task compare                              just this, on the last run's output
-    python3 scripts/compare.py --generated FILE
-    python3 scripts/compare.py --generated FILE --features
+    python3 scripts/04_04_compare.py --generated FILE
+    python3 scripts/04_04_compare.py --generated FILE --features
 """
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ import sys
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 ROOT = SCRIPTS.parent
-GOLDEN = ROOT / "discovery.cpp.rb"
-SOURCE = ROOT / "discovery.cpp"
+GOLDEN = ROOT / "01-golden/libsync/discovery.cpp.rb"
+SOURCE = ROOT / "02-input/libsync/discovery.cpp"
 # Inside the project, not /tmp. rubocop resolves .rubocop.yml relative to the
 # file it inspects, so staging under /tmp silently used rubocop's DEFAULT config
 # and inserted `# frozen_string_literal: true`, shifting the whole diff. Keeping
@@ -246,7 +246,8 @@ def main() -> int:
             if i < len(gen_lines):
                 print(f"  {mark} generated {i+1:4}| {gen_lines[i]}")
     print()
-    report_features(generated)
+    if args.features or "discovery.cpp" in str(golden_path):
+        report_features(generated)
     return 0 if first is None else 1
 
 

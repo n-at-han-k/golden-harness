@@ -563,7 +563,7 @@ def statement_tier(tier: int) -> str:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -1041,7 +1041,7 @@ def statement_tier(tier: int) -> str:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -1149,9 +1149,9 @@ def statement_tier(tier: int) -> str:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{{ }}`, courtesy of rules/simplify.yml's
+  # The empty body is `{{ }}`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair{t}
     rule:
@@ -1188,7 +1188,7 @@ def statement_tier(tier: int) -> str:
   # `case X: {{ ... }}` -> `when X`, and `default: {{ ... }}` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -1301,7 +1301,7 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
     fix: "@~@$GLIT@~@"
   # Any other operand is interpolated. `not: binary_expression` keeps this off
   # the chain's own inner nodes, so only the leaves match.
-  # A parenthesised operand is unwrapped first: rules/simplify.yml puts parens
+  # A parenthesised operand is unwrapped first: rules/03_simplify.yml puts parens
   # round every ternary, and inside `#{...}` they are redundant -- the golden
   # writes `#{a ? b : c}`. Listed before g-val so it claims the node.
   - id: g-val-paren
@@ -1369,7 +1369,7 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
     fix: |
       require "$SPL"
   # `void A::f(args) { ... }` -> `def f(args) ... end`, tagged with its scope so
-  # rubyify.py can group all of a class's methods under ONE wrapper. Emitting
+  # 03_rubyify.py can group all of a class's methods under ONE wrapper. Emitting
   # the wrapper here would produce one `class A ... end` per method -- 658 of
   # them across the tree in an earlier attempt.
   - id: r-method
@@ -1385,7 +1385,7 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
               # -- `static bool computeLocalChecksum(...)` -- has a plain
               # identifier here, and MSCOPE's `::[^:]*$` strip then leaves the
               # function's own name, so it was tagged
-              # `# @class computeLocalChecksum` and rubyify.py opened a class
+              # `# @class computeLocalChecksum` and 03_rubyify.py opened a class
               # named after it. r-function handles that case with no tag.
               - has:
                   field: declarator
@@ -1425,7 +1425,7 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
       $MSTMTS
       end
   # A free function at namespace scope -- `static bool f(args) { ... }` -- is
-  # not a method, so it gets no `# @class` tag and rubyify.py leaves it at
+  # not a method, so it gets no `# @class` tag and 03_rubyify.py leaves it at
   # module level, which is where the C++ put it.
   - id: r-function
     rule:
@@ -1458,7 +1458,7 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
         # The scope is recovered by unification: the enclosing namespace also
         # holds `ProcessDirectoryJob::start` and friends, so $FSCOPE binds to
         # that qualified_identifier's scope and the emitted `# @class` tag makes
-        # rubyify.py group the helper with them.
+        # 03_rubyify.py group the helper with them.
         #
         # One class per namespace is assumed, which holds for this tree; a
         # second class would see its helpers tagged with the first.
@@ -1606,7 +1606,7 @@ DECL_REWRITERS = """  # ---- parameters ----------------------------------------
     fix: "$CIB"
 """
 
-HEADER = '''# C++ -> Ruby transformation, generated by golden-harness/build_transform.py.
+HEADER = '''# C++ -> Ruby transformation, generated by golden-harness/01_01_build_transform.py.
 id: cpp-to-ruby
 language: cpp
 severity: hint
@@ -1636,7 +1636,7 @@ def main() -> int:
              .replace("STMT1_NOSTRUCT", tier1_nostruct)
              .replace("STMT1", tier1))
     out = HEADER + tiers + decls + FOOTER
-    target = HERE / "transform.yml"
+    target = HERE / "07_07_transform.yml"
     target.write_text(out)
     rewriters = out.count("\n  - id: ")
     print(f"wrote {target.relative_to(HERE.parent)} "

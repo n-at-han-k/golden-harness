@@ -108,7 +108,7 @@ Nathank/NoReturn:
 
 # Bans the ternary. The pipeline must therefore not EMIT one: this cop only
 # reports, it does not autocorrect, so the expansion into if/else lives in
-# scripts/rules/simplify.yml (s-ternary-decl, s-ternary-assign, s-ternary-arg).
+# scripts/rules/03_03_simplify.yml (s-ternary-decl, s-ternary-assign, s-ternary-arg).
 Style/DisableSyntax:
   DisableSyntax:
     - ternary

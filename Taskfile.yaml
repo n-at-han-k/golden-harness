@@ -1,47 +1,43 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
 #
-# The C++ -> Ruby pipeline. Each stage rewrites tmp/ in place.
+# Golden-harness pipeline.
 #
-#   task                           the trimmed discovery.cpp
-#   task SRC=discovery.cpp.full    the whole 1320-line file
+# Layout:
+#   02-input/<rel>/<name>.<ext>      source case
+#   01-golden/<rel>/<name>.<ext>.rb  hand-written golden (gated)
+#   03-output/<rel>/<name>.<ext>.rb  generated output artifact
+#
+# Commands:
+#   task                                  verify all gated goldens
+#   task verify SRC=02-input/.../foo.cpp  verify one case
+#   task bootstrap SRC=02-input/.../foo.cpp  generate golden draft from input
+#   task add SRC=../src/libsync/foo.cpp  copy file into 02-input
 
 version: '3'
 
-vars:
-  SRC: discovery.cpp
-
 tasks:
   default:
-    desc: Run the pipeline and diff the result against the golden
+    desc: Verify all gated goldens (no regressions)
     cmds:
-      - rm -rf tmp && mkdir -p tmp/libsync && cp {{.SRC}} tmp/libsync/discovery.cpp
-      - python3 scripts/build_transform.py
-      - python3 scripts/prepare.py tmp tmp
-      - ast-grep scan -c sgconfig.yml -r scripts/rules/00-alias.yml --update-all tmp
-      - ast-grep scan -c sgconfig.yml -r scripts/rules/01-typos.yml --update-all tmp
-      # To a fixpoint, and until it actually converges rather than for a fixed
-      # count: an outer match consumes its inner one, and the `else if` and
-      # case normalisations each create new nesting for the next round to find.
-      # Five rounds left 10 edits still pending on the last one.
-      - |
-        for i in $(seq 20); do
-          # 2>&1 matters: ast-grep reports "Applied N changes" on STDERR, so a
-          # bare $(...) captures nothing and the loop breaks after one round.
-          out=$(ast-grep scan -c sgconfig.yml -r scripts/rules/simplify.yml --update-all tmp 2>&1)
-          echo "$out"
-          case "$out" in
-            *Applied*) ;;
-            *) echo "simplify: fixpoint after $i round(s)"; break ;;
-          esac
-        done
-      # After the fixpoint, not inside it: baking an expression into a string
-      # literal hides it from every later AST rule, and s-snake-identifier
-      # matches nodes INSIDE the call it rewrites -- on an overlap ast-grep
-      # keeps the outer match, so sharing a scan would drop the renaming.
-      - ast-grep scan -c sgconfig.yml -r scripts/rules/02-interp.yml --update-all tmp
-      - ast-grep scan -c sgconfig.yml -r scripts/transform.yml --update-all tmp
-      - python3 scripts/rubyify.py tmp tmp
-      # Non-zero whenever offences remain after autocorrect, which is expected
-      # on generated code. The log keeps what it did and what it could not do.
-      - bundle exec rubocop -A -c .rubocop.yml tmp >tmp/rubocop.log || true
-      - python3 scripts/compare.py --generated tmp/libsync/discovery.cpp.rb --golden {{.SRC}}.rb
+      - python3 scripts/05_validate.py
+
+  verify:
+    desc: Verify one case against its golden
+    requires:
+      vars: [SRC]
+    cmds:
+      - python3 scripts/05_validate.py --case "{{.SRC}}"
+
+  bootstrap:
+    desc: Generate golden draft from input into 01-golden
+    requires:
+      vars: [SRC]
+    cmds:
+      - python3 scripts/05_validate.py --case "{{.SRC}}" --bootstrap
+
+  add:
+    desc: Copy a source file into 02-input
+    requires:
+      vars: [SRC]
+    cmds:
+      - python3 scripts/05_validate.py --add "{{.SRC}}"

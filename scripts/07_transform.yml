@@ -354,7 +354,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -858,9 +858,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-1
     rule:
@@ -897,7 +897,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -1466,7 +1466,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -1944,7 +1944,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -2052,9 +2052,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-2
     rule:
@@ -2091,7 +2091,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -2660,7 +2660,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -3138,7 +3138,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -3246,9 +3246,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-3
     rule:
@@ -3285,7 +3285,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -3854,7 +3854,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -4332,7 +4332,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -4440,9 +4440,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-4
     rule:
@@ -4479,7 +4479,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -5048,7 +5048,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -5526,7 +5526,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -5634,9 +5634,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-5
     rule:
@@ -5673,7 +5673,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -6242,7 +6242,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -6720,7 +6720,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -6828,9 +6828,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-6
     rule:
@@ -6867,7 +6867,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -7436,7 +7436,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -7914,7 +7914,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -8022,9 +8022,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-7
     rule:
@@ -8061,7 +8061,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -8630,7 +8630,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -9108,7 +9108,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -9216,9 +9216,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-8
     rule:
@@ -9255,7 +9255,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -9824,7 +9824,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -10302,7 +10302,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -10410,9 +10410,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-9
     rule:
@@ -10449,7 +10449,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -11018,7 +11018,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -11496,7 +11496,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -11604,9 +11604,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-10
     rule:
@@ -11643,7 +11643,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
@@ -12212,7 +12212,7 @@ rewriters:
   #     server_modified.call
   #
   # Two statements rather than `end.call`, so `end` ends its own line. That
-  # matters beyond looks: rubyify.py finds a method's extent by scanning for a
+  # matters beyond looks: 03_rubyify.py finds a method's extent by scanning for a
   # matching `end`, and `end.call` is not that token, so the scan ran past the
   # method and swallowed every following `# @class` tag into one block.
   #
@@ -12690,7 +12690,7 @@ rewriters:
       $WBODY
       end
   # A map loop: `for (const auto &f : entries)` whose body uses the pair
-  # members. 00-alias.yml has already turned `f.first`/`f.second` into the
+  # members. 01_alias.yml has already turned `f.first`/`f.second` into the
   # identifiers `f_first`/`f_second`, so the pair is visible here with no type
   # knowledge, and Ruby destructures it in the block parameters.
   #
@@ -12798,9 +12798,9 @@ rewriters:
   # Two rules, because one fix replaces one node: s-case-pair rewrites the
   # label that HAS the body and pulls the preceding empty label's value in via
   # `follows`, and s-case-absorbed deletes that now-redundant empty label. Same
-  # shape as the pair in rules/00-alias.yml.
+  # shape as the pair in rules/01_alias.yml.
   #
-  # The empty body is `{ }`, courtesy of rules/simplify.yml's
+  # The empty body is `{ }`, courtesy of rules/03_simplify.yml's
   # s-brace-case-empty, and "empty" is tested as having no named child.
   - id: s-case-pair-11
     rule:
@@ -12837,7 +12837,7 @@ rewriters:
   # `case X: { ... }` -> `when X`, and `default: { ... }` -> `else`.
   #
   # Rebuilt from the node's own fields, never from the label's text.
-  # rules/simplify.yml has already braced every case body and dropped the
+  # rules/03_simplify.yml has already braced every case body and dropped the
   # trailing `break`, so each case_statement here has exactly one
   # compound_statement child and the body rewrite is the same shape as every
   # other block.
