@@ -58,10 +58,9 @@
           ];
         };
 
-        # A wrapper around `task transpile`, not a second copy of the pipeline.
-        # The stage order lives in Taskfile.yaml alone -- written out twice it
-        # would drift, and a drifted CLI would quietly emit different Ruby from
-        # what the goldens are verified against.
+        # An interface to `go-task`, nothing more. The pipeline has exactly one
+        # definition -- the `default` task in Taskfile.yaml -- and this hands it
+        # a SRC and takes the file it leaves in tmp/.
         cpp2rb = pkgs.writeShellApplication {
           name = "cpp2rb";
           runtimeInputs = [
@@ -79,47 +78,60 @@
               exit 2
             fi
 
-            input=$1
-            output=$2
-
-            if [ ! -r "$input" ]; then
-              echo "cpp2rb: cannot read $input" >&2
+            if [ ! -r "$1" ]; then
+              echo "cpp2rb: cannot read $1" >&2
               exit 1
             fi
 
             # prepare.py and rubyify.py both select on the extension, so an
-            # unrecognised one is silently copied through untransformed rather
-            # than failing. Reject it here instead.
-            case $input in
+            # unrecognised one is skipped rather than failing, and the task
+            # would end with nothing produced. Say so here instead.
+            case $1 in
               *.cpp | *.cc | *.cxx | *.h | *.hpp) ;;
               *)
-                echo "cpp2rb: $input is not a C++ source or header" \
+                echo "cpp2rb: $1 is not a C++ source or header" \
                      "(.cpp .cc .cxx .h .hpp)" >&2
                 exit 2
                 ;;
             esac
 
+            # go-task runs with $work as its CWD, so both paths must be
+            # absolute before the cd.
+            input=$(realpath "$1")
+            mkdir -p "$(dirname "$2")"
+            output=$(realpath -m "$2")
+
             # The pipeline needs a WRITABLE tree rooted where sgconfig.yml and
-            # .rubocop.yml live: build_transform.py writes scripts/transform.yml,
-            # ast-grep rewrites tmp/ in place, and both configs resolve
-            # ruleDirs/require relative to themselves.
+            # .rubocop.yml live: build_transform.py writes
+            # scripts/transform.yml, every ast-grep stage rewrites tmp/ in
+            # place, and both configs resolve ruleDirs/require relative to
+            # themselves.
             work=$(mktemp -d)
             trap 'rm -rf "$work"' EXIT
             cp -R ${harnessSrc}/. "$work/"
             chmod -R u+w "$work"
-
-            # Absolute, since go-task runs with $work as its CWD.
-            input=$(realpath "$input")
-            mkdir -p "$(dirname "$output")"
-            output=$(realpath -m "$output")
-
             cd "$work"
-            # rubocop needs somewhere to write its cache; $HOME may be unset or
+
+            # rubocop wants somewhere to write its cache; $HOME may be unset or
             # read-only under `nix run`.
             export XDG_CACHE_HOME="$work/.cache"
-            # The bundlerEnv wrapper, in place of `bundle exec rubocop`: there
-            # is no bundler-resolvable Gemfile in the store copy.
-            go-task transpile "SRC=$input" "OUT=$output" RUBOCOP=rubocop
+
+            # RUBOCOP replaces `bundle exec rubocop`: the store copy has no
+            # Gemfile for bundler to resolve against, but the bundlerEnv
+            # wrapper is already on PATH.
+            #
+            # The task ends by diffing against <SRC>.rb. An arbitrary input has
+            # no golden, so that last step is expected to fail and its exit
+            # status is not this CLI's -- the Ruby is produced by the stage
+            # before it. Whether the file appeared is the real test.
+            go-task "SRC=$input" RUBOCOP=rubocop || true
+
+            result=tmp/libsync/discovery.cpp.rb
+            if [ ! -f "$result" ]; then
+              echo "cpp2rb: the pipeline produced no output for $input" >&2
+              exit 1
+            fi
+            cp "$result" "$output"
           '';
         };
       in

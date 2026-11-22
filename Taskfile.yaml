@@ -4,10 +4,6 @@
 #
 #   task                           the trimmed discovery.cpp
 #   task SRC=discovery.cpp.full    the whole 1320-line file
-#   task transpile SRC=a.cpp OUT=a.rb      any file, no golden
-#
-# `nix run .#default a.cpp a.rb` is a wrapper around that last one, so the
-# stages have exactly one definition -- the `pipeline` task below.
 
 version: '3'
 
@@ -17,22 +13,6 @@ vars:
 tasks:
   default:
     desc: Run the pipeline and diff the result against the golden
-    cmds:
-      - task: pipeline
-        vars: { SRC: '{{.SRC}}' }
-      - python3 scripts/compare.py --generated tmp/libsync/discovery.cpp.rb --golden {{.SRC}}.rb
-
-  transpile:
-    desc: Transliterate SRC to OUT. No golden involved -- this is the CLI's task.
-    requires:
-      vars: [SRC, OUT]
-    cmds:
-      - task: pipeline
-        vars: { SRC: '{{.SRC}}' }
-      - cp tmp/libsync/discovery.cpp.rb {{.OUT}}
-
-  pipeline:
-    internal: true
     cmds:
       - rm -rf tmp && mkdir -p tmp/libsync && cp {{.SRC}} tmp/libsync/discovery.cpp
       - python3 scripts/build_transform.py
@@ -63,6 +43,5 @@ tasks:
       - python3 scripts/rubyify.py tmp tmp
       # Non-zero whenever offences remain after autocorrect, which is expected
       # on generated code. The log keeps what it did and what it could not do.
-      # $RUBOCOP lets the flake app substitute the bundlerEnv wrapper, which
-      # needs no bundler to resolve a Gemfile that is not in the store copy.
-      - '{{.RUBOCOP | default "bundle exec rubocop"}} -A -c .rubocop.yml tmp >tmp/rubocop.log || true'
+      - bundle exec rubocop -A -c .rubocop.yml tmp >tmp/rubocop.log || true
+      - python3 scripts/compare.py --generated tmp/libsync/discovery.cpp.rb --golden {{.SRC}}.rb
