@@ -339,7 +339,7 @@ module OCC
         checksum = ComputeChecksum.compute_now_on_file(path, checksum_header.type)
 
         if !checksum.is_empty
-          item.checksum_header = ChecksumHeader(checksum_header.type, checksum).make_checksum_header
+          item.checksum_header = ChecksumHeader.new(checksum_header.type, checksum).make_checksum_header
 
           return true
         end
@@ -540,7 +540,7 @@ module OCC
 
             return
           end
-        elsif !QFileInfo(@discovery_data.local_dir + original_path_adjusted).is_dir
+        elsif !QFileInfo.new(@discovery_data.local_dir + original_path_adjusted).is_dir
           Log.info("sync.discovery") { "Local directory does not exist anymore. #{original_path_adjusted}" }
 
           return

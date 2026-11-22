@@ -74,6 +74,10 @@ module GoldenHarness
     # private method.
     def internal?(name) = internal.include?(name)
 
+    # A class, struct or union the headers declare -- so `Foo(args)` is a
+    # constructor and becomes `Foo.new(args)`.
+    def record?(name) = records.include?(name)
+
     # A name declared as a local in this function rather than a member of the
     # class, which is what decides whether a leading `_` becomes an `@`.
     def local?(scope, name) = scope && locals.include?("#{scope}::#{name}")

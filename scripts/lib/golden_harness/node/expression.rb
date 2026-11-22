@@ -192,8 +192,12 @@ module GoldenHarness
              @facts.callable?(@function, local_name(text), @method_name)
             return send_with_block(Lvar(local_name(text)), :call, node, args)
           end
-          # `ChecksumHeader(type, sum)` / `QFileInfo(path)` -- a constructor
-          # call, so the name is a class name and stays as written.
+          # `ChecksumHeader(type, sum)` / `QFileInfo(path)` -- a CONSTRUCTOR,
+          # which in Ruby is `.new`. Bare, it is a call to a method of that
+          # name, which does not exist; the oracle confirms these are classes.
+          return send_with_block(ConstPath(text), :new, node, args) if
+            text.match?(/\A[A-Z]/) && @facts.record?(text)
+
           return send_with_block(nil, text, node, args) if text.match?(/\A[A-Z]/)
 
           return send_with_block(nil, snake(text), node, args)
@@ -397,8 +401,36 @@ module GoldenHarness
         # and statement() keeps that case for itself.
         return assignment if @pending_updates.nil?
 
+        # Every increment the C++ has, including a last one whose value nothing
+        # reads.
+        #
+        # The golden cannot be matched here: it DROPS that dead store in
+        # setFileRecord and KEEPS it in getUploadInfo and getUploadInfos, on
+        # identical code -- `x = f(i++)` as the last mention of `i` either way.
+        # No rule fits all three, so the faithful reading wins and the one
+        # dropped increment in setFileRecord is a known difference.
+        # `read_later?` below is what the other choice would use.
         @pending_updates << assignment
         expr(operand)
+      end
+
+      # Whether this name is mentioned again after the statement being built.
+      #
+      # A local, statement-level liveness test: enough to tell a counter that
+      # goes on being used from one whose last increment nothing reads.
+      def read_later?(operand)
+        return true if @current_statement.nil? || operand.kind != "identifier"
+
+        name = @cst.text(operand)
+        block = @current_statement.parent
+        return true if block.nil?
+
+        after = @cst.named(block).drop_while { _1.start_byte <= @current_statement.start_byte }
+        after.any? do |statement|
+          @cst.descendants(statement).any? do |node|
+            node.kind == "identifier" && @cst.text(node) == name
+          end
+        end
       end
 
       def negated_update?(operand)

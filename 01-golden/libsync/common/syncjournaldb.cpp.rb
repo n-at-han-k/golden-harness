@@ -157,10 +157,7 @@ module OCC
       end
 
       if autotest_fail_counter >= 0
-        fail_now = autotest_fail_counter == 0
-        autotest_fail_counter -= 1
-
-        if fail_now
+        if (autotest_fail_counter -= 1) == -1
           Log.info("sync.database") { "Error Simulated" }
 
           return false
@@ -846,6 +843,7 @@ module OCC
         query.bind_value(i, content_checksum_type_id)
         i += 1
         query.bind_value(i, record.has_dirty_placeholder)
+        i += 1
 
         if !query.exec
           return query.error
@@ -1076,7 +1074,7 @@ module OCC
       else
         query = @query_manager.get(
           :get_files_below_path_query,
-          SyncJournalFileRecord.query + "WHERE (path > (?1||'/') AND path < (?1||'0')) ORDER BY path||'/' ASC",
+          SyncJournalFileRecord.query + "WHERE (path > (?1||'/') AND path < (?1||'0'))" " ORDER BY path||'/' ASC",
           @db
         )
 
@@ -1511,6 +1509,7 @@ module OCC
         query.bind_value(index, i.content_checksum)
         index += 1
         query.bind_value(index, i.url.to_encoded)
+        index += 1
 
         if !query.exec
           return

@@ -63,7 +63,7 @@ module GoldenHarness
       # for a call argument and wrong here, so the lift happens at this level.
       def log_body(node)
         found = ternary_operand(node)
-        return message(node) if found.nil?
+        return message(node) if found.nil? || string_ternary?(found)
 
         @ternary_branch[found.start_byte] = :consequence
         consequence = message(node)
@@ -72,6 +72,17 @@ module GoldenHarness
         @ternary_branch.delete(found.start_byte)
 
         If(expr(@cst.field(found, :condition)), consequence, alternative)
+      end
+
+      # A ternary choosing between two STRING LITERALS contributes text to the
+      # message rather than a value, and the golden duplicates the whole
+      # statement for it -- `commit_internal` gets two `Log.debug` calls --
+      # where a ternary choosing between two VALUES is duplicated inside the
+      # block. The branches say which.
+      def string_ternary?(found)
+        %w[string_literal raw_string_literal concatenated_string].include?(
+          @cst.field(found, :consequence).kind
+        )
       end
 
       def ternary_operand(node)

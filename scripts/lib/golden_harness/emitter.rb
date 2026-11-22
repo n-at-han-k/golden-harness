@@ -242,8 +242,7 @@ module GoldenHarness
         @function = nil
         @method_name = nil
 
-        Def(ruby_method_name(name, declarator),
-            parameters(declarator, @cst.field(node, :body)), Body(statements))
+        Def(ruby_method_name(name, declarator), parameters(declarator, node), Body(statements))
       end
 
       # The member initialiser list, which runs before the body.
@@ -278,9 +277,24 @@ module GoldenHarness
       # spelled with the class's own name in C++, and the `~` is the only thing
       # that tells them apart.
       def ruby_method_name(name, declarator)
-        return name unless name == @class_name
+        return disambiguate(name, declarator) unless name == @class_name
 
         @cst.dig?(declarator, "destructor_name") ? "finalize" : "initialize"
+      end
+
+      # C++ overloads on the parameter list; Ruby has one method per name.
+      #
+      # `wipeErrorBlacklistEntry(file)` and `wipeErrorBlacklistEntry(file,
+      # category)` would collide, so the second takes the name of the argument
+      # that distinguishes it -- which is what the golden calls it.
+      def disambiguate(name, declarator)
+        seen = (@method_names ||= {})
+        count = seen[name] = seen.fetch(name, 0) + 1
+        return name if count == 1
+
+        extra = @cst.named(@cst.field(declarator, :parameters)).last
+        tail = extra && @cst.dig(extra, "identifier", field: :declarator)
+        tail ? "#{name}_with_#{snake(@cst.text(tail))}" : "#{name}_#{count}"
       end
 
       def method_name(declarator)
@@ -291,7 +305,7 @@ module GoldenHarness
         plain && snake(@cst.text(plain))
       end
 
-      def parameters(declarator, body = nil)
+      def parameters(declarator, definition = nil)
         list = @cst.field(declarator, :parameters)
         @cst.named(list).filter_map do |param|
           case param.kind
@@ -299,7 +313,7 @@ module GoldenHarness
             name = @cst.dig(param, "identifier", field: :declarator)
             next "_" if name.nil?
 
-            unused?(body, @cst.text(name)) ? "_#{@cst.text(name)}" : @cst.text(name)
+            unused?(definition, @cst.text(name)) ? "_#{@cst.text(name)}" : @cst.text(name)
           when "variadic_parameter_declaration"
             "*#{@cst.text(@cst.dig(param, "identifier", field: :declarator))}"
           end
@@ -312,12 +326,34 @@ module GoldenHarness
       # 02_prepare.py leaves and the emitter drops -- is the C++ saying the
       # same thing. rubocop reports this as Lint/UnusedMethodArgument but will
       # not correct it under `-A`, so it is done here.
-      def unused?(body, name)
-        return false if body.nil?
+      def unused?(definition, name)
+        return false if definition.nil?
 
-        @cst.descendants(body).none? do |node|
-          %w[identifier field_identifier].include?(node.kind) && @cst.text(node) == name
+        # The WHOLE definition, not just the body: a constructor's parameters
+        # are used by its member-initialiser list and nowhere else.
+        #
+        # A mention inside `Q_UNUSED(x)` does not count -- that call is the C++
+        # saying the parameter is unused, and the emitter drops it.
+        @cst.descendants(definition).none? do |node|
+          next false unless %w[identifier field_identifier].include?(node.kind)
+          next false unless @cst.text(node) == name
+          # Its own declaration is not a use.
+          next false if @cst.within?(node, "parameter_declaration")
+
+          !unused_marker?(node)
         end
+      end
+
+      def unused_marker?(node)
+        at = node.parent
+        while at
+          if at.kind == "call_expression"
+            callee = @cst.field(at, :function)
+            return true if callee && DROPPED.include?(@cst.text(callee))
+          end
+          at = at.parent
+        end
+        false
       end
 
       # A plain-data struct is a Struct, which is a constant, so it is hoisted

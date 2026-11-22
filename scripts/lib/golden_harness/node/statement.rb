@@ -9,6 +9,8 @@ module GoldenHarness
     # and needs none: dropping it leaves the parameter unused, and rubocop's
     # Lint/UnusedMethodArgument renames it to `_x`, which is the golden's form.
     DROPPED = %w[Q_UNUSED].freeze
+    ::GoldenHarness::Emitter::DROPPED = DROPPED unless
+      ::GoldenHarness::Emitter.const_defined?(:DROPPED, false)
 
     # A map whose `[]` default-constructs, which is what lets the C++
     # `entries[k].field = v` work on an absent key. A bare `{}` returns nil and
@@ -60,7 +62,12 @@ module GoldenHarness
         return false unless node.kind == "expression_statement"
 
         inner = @cst.named(node).first
-        !inner.nil? && log_chain?(inner)
+        return false if inner.nil? || !log_chain?(inner)
+
+        # Unless its ternary is between two strings, which log_body declines
+        # so that the statement is duplicated instead.
+        found = ternary_operand(inner)
+        found.nil? || !string_ternary?(found)
       end
 
       # The first ternary this statement owns. One inside a nested lambda
@@ -296,11 +303,13 @@ module GoldenHarness
 
         deferred = []
         before = []
+        @current_statement = node
         @pending_updates = deferred
         @pending_before = before
         built = expression_statement_body(node, inner)
         @pending_updates = nil
         @pending_before = nil
+        @current_statement = nil
 
         before + built + deferred
       end
