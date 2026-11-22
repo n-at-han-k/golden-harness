@@ -364,7 +364,6 @@ def statement_tier(tier: int) -> str:
       kind: pointer_expression
       regex: '^&'
       inside: {{ kind: argument_list }}
-      not: {{ nthChild: {{ position: 1, reverse: true }} }}
       has: {{ field: argument, pattern: $AV }}
     fix: "$AV"
   - id: l-new{t}
@@ -771,12 +770,20 @@ def statement_tier(tier: int) -> str:
   # taken from inside the block body.
   - id: l-arg{t}
     rule:
-      inside: {{ kind: argument_list }}
       pattern: $LA
-      not:
-        any:
-          - {{ kind: lambda_expression }}
-          - {{ inside: {{ kind: lambda_expression, stopBy: end }} }}
+      not: {{ kind: lambda_expression }}
+      # The node's OWN argument list must be the one being rewritten, which is
+      # identified by its ending in a lambda. `not: inside lambda_expression
+      # with stopBy: end` was wrong twice over: it excluded every argument of a
+      # `connect` that merely happened to sit inside another lambda -- which
+      # emitted `connect do` with no arguments at all -- while the thing it was
+      # meant to exclude, an argument of a call nested in the block body, is
+      # caught here because that call's list does not end in a lambda.
+      inside:
+        kind: argument_list
+        has:
+          kind: lambda_expression
+          nthChild: {{ position: 1, reverse: true }}
     fix: "$LA"
   # `&Class::signal` in a non-final argument slot loses its `&`, for the reason
   # given on l-addr. Listed before l-arg so it claims the node first.
@@ -784,11 +791,11 @@ def statement_tier(tier: int) -> str:
     rule:
       kind: pointer_expression
       regex: '^&'
-      inside: {{ kind: argument_list }}
-      not:
-        any:
-          - {{ inside: {{ kind: lambda_expression, stopBy: end }} }}
-          - {{ nthChild: {{ position: 1, reverse: true }} }}
+      inside:
+        kind: argument_list
+        has:
+          kind: lambda_expression
+          nthChild: {{ position: 1, reverse: true }}
       has: {{ field: argument, pattern: $LAA }}
     fix: "$LAA"
   # A lambda BOUND TO A NAME: `auto f = [c](A a, B b) {{ ... }};`

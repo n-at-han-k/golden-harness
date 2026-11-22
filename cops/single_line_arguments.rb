@@ -29,16 +29,34 @@ module RuboCop
         extend AutoCorrector
 
         MSG = 'Keep an argument list on one line.'
+        MSG_SPLIT = 'Put one argument per line; the joined call is too long.'
+
+        # How long the joined argument list may be.
+        #
+        # Measured off the golden's wrapped calls: it joins them at argument
+        # lengths of 59 and 64 and puts one argument per line at 80 and 86, so
+        # anything in 65..79 separates the two.
+        #
+        # The ARGUMENTS are measured, not the finished line. Cops run in the
+        # same pass as the indentation cops, so the indentation a correction
+        # sees is whatever the file happens to have at that moment -- a width
+        # including it split a call that was comfortably inside the limit by
+        # the time the file settled.
+        ARGS_WIDTH = 72
 
         def on_send(node)
           args = node.arguments
           return if args.size < 2
-          # The ARGUMENTS have to span lines, not the call. A call whose args
-          # all sit on one line between a wrapped `(` and `)` is already what
-          # this cop wants: offending on it replaced the range with identical
-          # text, so the offence was reported again on every run and
-          # `rubocop -A` could never reach zero.
-          return if args.first.source_range.line == args.last.source_range.last_line
+          # A trailing block is not part of the argument list.
+          return if node.block_literal?
+          if args.first.source_range.line == args.last.source_range.last_line
+            # Splitting applies only to a call ALREADY in the wrapped form --
+            # one whose `(` ends its line. A call the source put on a single
+            # line stays there however long it is, which is what the golden
+            # does with the 190-column `handle_excluded(...)`.
+            split(node, args) if wrapped?(node) && too_long?(node, args)
+            return
+          end
           return if one_per_line?(args)
           # A trailing block is not part of the argument list.
           return if node.block_literal?
@@ -57,6 +75,27 @@ module RuboCop
         alias on_csend on_send
 
         private
+
+        # The call's `(` ends its line, so the arguments were already pushed
+        # onto lines of their own.
+        def wrapped?(node)
+          return false if node.loc.begin.nil?
+
+          node.loc.begin.source_line[node.loc.begin.column + 1..].strip.empty?
+        end
+
+        def too_long?(_node, args)
+          joined(args).length >= ARGS_WIDTH
+        end
+
+        # One argument per line, at one level in from the call.
+        def split(node, args)
+          indent = "#{node.source_range.source_line[/\A[ \t]*/]}  "
+          add_offense(node, message: MSG_SPLIT) do |corrector|
+            corrector.replace(arguments_range(node),
+                              args.map(&:source).join(",\n#{indent}"))
+          end
+        end
 
         # Each argument starting on its own line is intentional layout.
         def one_per_line?(args)

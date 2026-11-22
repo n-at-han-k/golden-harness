@@ -126,7 +126,7 @@ module OCC
         process_file(path, e.local_entry, e.server_entry, e.db_entry)
       end
 
-      QTimer.single_shot(0, @discovery_data, &DiscoveryPhase.schedule_more_jobs)
+      QTimer.single_shot(0, @discovery_data, DiscoveryPhase.schedule_more_jobs)
     end
 
     def handle_excluded(path, local_name, is_directory, is_hidden, is_symlink, is_vault_file)
@@ -574,9 +574,9 @@ module OCC
           @pending_async_jobs += 1
           job = RequestEtagJob.new(@discovery_data.account, @discovery_data.base_url, @discovery_data.remote_folder + original_path, this)
 
-          connect(job, RequestEtagJob.finished_signal, this, lambda {
+          connect(job, RequestEtagJob.finished_signal, this) do
             @pending_async_jobs -= 1
-            QTimer.single_shot(0, @discovery_data, &DiscoveryPhase.schedule_more_jobs)
+            QTimer.single_shot(0, @discovery_data, DiscoveryPhase.schedule_more_jobs)
 
             if (
               job.http_status_code == 207 ||
@@ -603,7 +603,7 @@ module OCC
             end
 
             @discovery_data.fatal_error("Error while doing a rename, unhandled status code: %1".arg(job.http_status_code))
-          })
+          end
 
           job.start
           done = true
@@ -1043,7 +1043,7 @@ module OCC
         server_original_path = @discovery_data.remote_folder + @discovery_data.adjust_renamed_path(original_path, :down)
         job = RequestEtagJob.new(@discovery_data.account, @discovery_data.base_url, server_original_path, this)
 
-        connect(job, :finished_signal, this) do
+        connect(job, RequestEtagJob.finished_signal, this) do
           if (
             job.http_status_code == 404 ||
             (job.etag != base.etag && !item.is_directory) ||
@@ -1075,7 +1075,7 @@ module OCC
           end
 
           @pending_async_jobs -= 1
-          QTimer.single_shot(0, @discovery_data, :schedule_more_jobs)
+          QTimer.single_shot(0, @discovery_data, DiscoveryPhase.schedule_more_jobs)
         end
 
         job.start
@@ -1128,16 +1128,14 @@ module OCC
         up.valid &&
         up.content_checksum == server_entry.checksum_header
       )
-        item.set_instruction((
-          if (
-            up.modtime == local_entry.modtime &&
-            up.size == local_entry.size
-          )
-            CSYNC_INSTRUCTION_UPDATE_METADATA
-          else
-            CSYNC_INSTRUCTION_SYNC
-          end
-        ))
+        if (
+          up.modtime == local_entry.modtime &&
+          up.size == local_entry.size
+        )
+          item.set_instruction(CSYNC_INSTRUCTION_UPDATE_METADATA)
+        else
+          item.set_instruction(CSYNC_INSTRUCTION_SYNC)
+        end
 
         item.direction = :up
 
@@ -1214,7 +1212,7 @@ module OCC
           job.set_parent(@discovery_data)
           @discovery_data.queued_deleted_directories[path.original] = job
         else
-          connect(job, ProcessDirectoryJob.finished, this, &ProcessDirectoryJob.sub_job_finished)
+          connect(job, ProcessDirectoryJob.finished, this, ProcessDirectoryJob.sub_job_finished)
           @queued_jobs.push_back(job)
         end
       else
@@ -1246,8 +1244,14 @@ module OCC
       if (
         db_entry.is_valid &&
         (
-          (db_entry.modtime == local_entry.modtime && db_entry.size == local_entry.size) ||
-          (local_entry.is_directory && db_entry.is_directory)
+          (
+            db_entry.modtime == local_entry.modtime &&
+            db_entry.size == local_entry.size
+          ) ||
+          (
+            local_entry.is_directory &&
+            db_entry.is_directory
+          )
         )
       )
         item.set_instruction(CSYNC_INSTRUCTION_REMOVE)
@@ -1266,7 +1270,7 @@ module OCC
         item.instruction != CSYNC_INSTRUCTION_IGNORE
       )
         job = ProcessDirectoryJob.new(path, item, :normal_query, :in_black_list, this)
-        connect(job, :finished, this, :sub_job_finished)
+        connect(job, ProcessDirectoryJob.finished, this, ProcessDirectoryJob.sub_job_finished)
         @queued_jobs.push_back(job)
       else
         @discovery_data.item_discovered(item)
@@ -1443,7 +1447,7 @@ module OCC
       end
 
       job.delete_later
-      QTimer.single_shot(0, @discovery_data, :schedule_more_jobs)
+      QTimer.single_shot(0, @discovery_data, DiscoveryPhase.schedule_more_jobs)
     end
 
     def process_sub_jobs(nb_jobs)
@@ -1529,11 +1533,11 @@ module OCC
         server_job.set_is_root_path
       end
 
-      connect(server_job, :etag, this, :etag)
+      connect(server_job, DiscoverySingleDirectoryJob.etag, this, ProcessDirectoryJob.etag)
       @discovery_data.currently_active_jobs += 1
       @pending_async_jobs += 1
 
-      connect(server_job, :finished) do |results|
+      connect(server_job, DiscoverySingleDirectoryJob.finished, this) do |results|
         @discovery_data.currently_active_jobs -= 1
         @pending_async_jobs -= 1
 
@@ -1582,7 +1586,7 @@ module OCC
         end
       end
 
-      connect(server_job, :first_directory_permissions) do |perms|
+      connect(server_job, DiscoverySingleDirectoryJob.first_directory_permissions, this) do |perms|
         @root_permissions = perms
       end
 
@@ -1602,13 +1606,13 @@ module OCC
 
       @discovery_data.currently_active_jobs += 1
       @pending_async_jobs += 1
-      connect(local_job, :item_discovered, @discovery_data, :item_discovered)
+      connect(local_job, DiscoverySingleLocalDirectoryJob.item_discovered, @discovery_data, DiscoveryPhase.item_discovered)
 
-      connect(local_job, :child_ignored) do |b|
+      connect(local_job, DiscoverySingleLocalDirectoryJob.child_ignored, this) do |b|
         @child_ignored = b
       end
 
-      connect(local_job, :finished_fatal_error) do |msg|
+      connect(local_job, DiscoverySingleLocalDirectoryJob.finished_fatal_error, this) do |msg|
         @discovery_data.currently_active_jobs -= 1
         @pending_async_jobs -= 1
 
@@ -1618,7 +1622,7 @@ module OCC
         end
       end
 
-      connect(local_job, :finished_non_fatal_error) do |msg|
+      connect(local_job, DiscoverySingleLocalDirectoryJob.finished_non_fatal_error, this) do |msg|
         @discovery_data.currently_active_jobs -= 1
         @pending_async_jobs -= 1
 
@@ -1631,7 +1635,7 @@ module OCC
         end
       end
 
-      connect(local_job, :finished) do |results|
+      connect(local_job, DiscoverySingleLocalDirectoryJob.finished, this) do |results|
         @discovery_data.currently_active_jobs -= 1
         @pending_async_jobs -= 1
         @local_normal_query_entries = results

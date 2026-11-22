@@ -126,7 +126,7 @@ module OCC
         process_file(path, e.local_entry, e.server_entry, e.db_entry)
       end
 
-      QTimer.single_shot(0, @discovery_data, &DiscoveryPhase.schedule_more_jobs)
+      QTimer.single_shot(0, @discovery_data, DiscoveryPhase.schedule_more_jobs)
     end
   end
 end

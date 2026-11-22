@@ -831,6 +831,19 @@ rule:
     kind: conditional_expression
     inside: { kind: argument_list, stopBy: end }
     has: { field: condition, pattern: $TAC }
+  # The statement must be the conditional's OWN -- not one that merely contains
+  # it inside a nested lambda. `auto postProcessRename = [...](path) { ...
+  # processFileFinalize(..., cond ? A : B, ...) ... };` is a declaration whose
+  # subtree holds the ternary, and matching it duplicated the entire 130-line
+  # lambda. The statement inside the lambda body matches instead.
+  not:
+    has:
+      stopBy: end
+      kind: lambda_expression
+      has:
+        stopBy: end
+        kind: conditional_expression
+        inside: { kind: argument_list, stopBy: end }
 rewriters:
   - id: t-then
     rule:

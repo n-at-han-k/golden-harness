@@ -282,6 +282,11 @@ module RuboCop
             if expand_inner && operand.begin_type? &&
                (inner.and_type? || inner.or_type?) &&
                operand.source.length >= NEST_WIDTH
+              # Every level opens out, not just the first. The golden
+              # contradicts itself here -- the same shape
+              # `X && ((a && b) || (c && d))` is expanded at one site and left
+              # inline at another -- and measured over the whole file,
+              # expanding throughout agrees with it on ten more lines.
               nested = render(inner, "#{indent}  ", expand_inner: expand_inner)
               "#{indent}(\n#{nested}\n#{indent})#{tail}"
             elsif expand_inner && (negated = negated_group(operand))
