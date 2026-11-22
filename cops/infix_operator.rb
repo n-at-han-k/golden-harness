@@ -27,14 +27,25 @@ module RuboCop
         ARITHMETIC = %i[+ - * / %].freeze
         COMPARISON = %i[> < >= <= == != <=>].freeze
 
-        def on_send(node)
-          return unless ARITHMETIC.include?(node.method_name)
-          return if node.loc.dot.nil?
-          return unless node.arguments.one?
+        # Whether this cop is going to rewrite `node`.
+        #
+        # `Transpile/MultilineCondition` asks, because the dot form is one
+        # character wider than the infix form and measuring it pushed a
+        # 59-column condition over the wrap limit. rubocop's `-A` loops until
+        # nothing corrects, so a condition holding one of these is measured on
+        # the next round instead.
+        def self.pending?(node)
+          return false unless node.send_type?
+          return false unless ARITHMETIC.include?(node.method_name)
+          return false if node.loc.dot.nil?
+          return false unless node.arguments.one?
 
           parent = node.parent
-          return if parent.nil? || !parent.send_type?
-          return unless COMPARISON.include?(parent.method_name)
+          !parent.nil? && parent.send_type? && COMPARISON.include?(parent.method_name)
+        end
+
+        def on_send(node)
+          return unless self.class.pending?(node)
 
           target = "#{node.receiver.source} #{node.method_name} #{node.arguments.first.source}"
           add_offense(node, message: format(MSG, operator: node.method_name)) do |corrector|

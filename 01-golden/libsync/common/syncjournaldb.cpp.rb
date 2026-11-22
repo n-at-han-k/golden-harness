@@ -50,6 +50,18 @@ module OCC
       @journal_mode = default_journal_mode(@db_file)
     end
 
+    def get_p_hash(file)
+      h = nil
+      len = file.length
+      h = c_jhash64(file.data, len, 0)
+
+      return h
+    end
+
+    def default_journal_mode(_db_path)
+      return "WAL"
+    end
+
     def make_db_name(local_path, infix)
       journal_path = ".sync_" + infix + ".db"
       file = QFile.new(QDir.new(local_path).file_path(journal_path))
@@ -2227,19 +2239,5 @@ module OCC
         )
       end
     end
-
-    private
-
-      def get_p_hash(file)
-        h = nil
-        len = file.length
-        h = c_jhash64(file.data, len, 0)
-
-        return h
-      end
-
-      def default_journal_mode(_db_path)
-        return "WAL"
-      end
   end
 end

@@ -179,10 +179,7 @@ module OCC
       @item.status = status_arg
 
       if @item.is_restoration
-        if (
-          @item.status == :success ||
-          @item.status == :conflict
-        )
+        if @item.status == :success || @item.status == :conflict
           @item.status = :restoration
         else
           @item.error_string += "; Restoration Failed: #{error_string}"
@@ -219,7 +216,10 @@ module OCC
       end
 
       if @item.has_error_status
-        Log.warn("sync.propagator") { "Could not complete propagation of #{@item.destination} by #{this} with status #{@item.status} and error: #{@item.error_string}" }
+        Log.warn("sync.propagator") {
+          "Could not complete propagation of #{@item.destination} by #{this} with status #{@item.status}" \
+            "and error: #{@item.error_string}"
+        }
       else
         Log.info("sync.propagator") { "Completed propagation of #{@item.destination} by #{this} with status #{@item.status}" }
       end
@@ -622,7 +622,7 @@ module OCC
       @journal.set_conflict_record(conflict_record)
 
       if account.capabilities.upload_conflict_files
-        if composite && !QFileInfo(conflict_file_path).is_dir
+        if composite && !QFileInfo.new(conflict_file_path).is_dir
           conflict_item = SyncFileItemPtr.new(SyncFileItem.new)
           conflict_item.set_local_name(conflict_file_name)
           conflict_item.type = :item_type_file
@@ -889,10 +889,7 @@ module OCC
     end
 
     def parallelism
-      if (
-        @first_job &&
-        @first_job.parallelism != :full_parallelism
-      )
+      if @first_job && @first_job.parallelism != :full_parallelism
         return :wait_for_finished
       end
 

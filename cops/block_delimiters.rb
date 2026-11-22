@@ -76,6 +76,7 @@ module RuboCop
           # FOR does, and it is the same test SingleLineBlock applies.
           def value_block?(node)
             return false unless node.arguments.empty?
+          return false unless braced_call?(node)
 
             body = node.body
             return false if body.nil? || body.begin_type?
@@ -99,6 +100,21 @@ module RuboCop
             return false if body.send_type? && body.assignment_method?
 
             true
+          end
+
+          # Which CALLS take a brace block.
+          #
+          # Read off the goldens: `lambda { ... }` and `Log.info(...) { ... }`
+          # keep braces, and every other block -- `connect(...)`, `.each`,
+          # `Hash.new` -- is written `do ... end`. The body alone does not
+          # separate them: `connect(..., context) do ... end` and
+          # `Log.info(...) { if ... end }` both hold a single `if`.
+          def braced_call?(node)
+            send_node = node.send_node
+            return true if send_node.method?(:lambda) && send_node.receiver.nil?
+
+            receiver = send_node.receiver
+            !receiver.nil? && receiver.const_type? && receiver.short_name == :Log
           end
 
           def branching?(node) = %i[if case].include?(node.type)

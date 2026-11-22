@@ -150,7 +150,24 @@ module GoldenHarness
       n(:dstr, *parts)
     end
 
-    def Interp(value) = n(:begin, value)
+    # `#{...}`, with any local variable in it written as a receiverless send.
+    #
+    # Unparser VERIFIES a dynamic string by printing it and parsing it back,
+    # and `"#{len}"` parses back as a method call, there being no scope inside
+    # a string to say otherwise. So any `lvar` under an interpolation makes it
+    # refuse the whole node with UnsupportedNodeError -- which is why this only
+    # showed up away from the gated cases, where every interpolated name
+    # happened to be a parameter and so already a send.
+    #
+    # The two spellings print identically, so nothing is lost.
+    def Interp(value) = n(:begin, sends_for_locals(value))
+
+    def sends_for_locals(node)
+      return node unless node.is_a?(::Parser::AST::Node)
+      return n(:send, nil, node.children.first) if node.type == :lvar
+
+      node.updated(nil, node.children.map { sends_for_locals(_1) })
+    end
 
     private
 

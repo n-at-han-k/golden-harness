@@ -36,15 +36,25 @@ def main(argv)
   facts_file = root + "facts.json"
   oracle = facts_file.file? ? JSON.parse(facts_file.read) : nil
   count = 0
+  failed = []
   root.find do |path|
     next unless path.file? && SOURCE_SUFFIXES.include?(path.extname)
 
-    ruby = GoldenHarness::Emitter.new(path.read, oracle).emit
+    begin
+      ruby = GoldenHarness::Emitter.new(path.read, oracle).emit
+    rescue StandardError => error
+      # One file is one translation unit. A library-wide run has to report the
+      # file that failed and carry on, or a single bad node hides the state of
+      # the other eighty-eight.
+      failed << [path.relative_path_from(root), error]
+      next
+    end
     path.write(ruby)
     count += 1
   end
-  puts "emitted #{count} files"
-  0
+  failed.each { warn "FAILED #{_1}: #{_2.message.lines.first}" }
+  puts "emitted #{count} files, #{failed.size} failed"
+  failed.empty? ? 0 : 1
 end
 
 exit(main(ARGV)) if $PROGRAM_NAME == __FILE__

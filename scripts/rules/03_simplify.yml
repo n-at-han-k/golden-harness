@@ -412,28 +412,18 @@ rule:
   inside: { kind: else_clause }
 fix: "{ $NESTED }"
 ---
-# Drop the `break` that ends a switch case.
+# The `break` that ends a switch case is dropped by the EMITTER, not here.
 #
-# Ruby's `when` does not fall through, so the C++ `break` has no counterpart --
-# and `break` outside a loop is a hard Ruby syntax error, so leaving it in
-# stops the file parsing. Only the LAST statement of the case is dropped, which
-# `nthChild: { position: 1, reverse: true }` states exactly; a `break` anywhere
-# else belongs to a loop inside the case and stays.
+# It was dropped at this stage, and that destroyed the one fact distinguishing
+# an arm that FALLS THROUGH from an arm that is a deliberate no-op. Both end up
+# as a case label with no statements:
 #
-# Both parents are listed because the case body may or may not be braced at
-# this point -- this rule runs before s-brace-case.
-id: s-drop-case-break
-language: cpp
-severity: hint
-rule:
-  kind: break_statement
-  nthChild: { position: 1, reverse: true }
-  inside:
-    any:
-      - { kind: case_statement }
-      - { kind: compound_statement, inside: { kind: case_statement } }
-fix: ""
----
+#   case Conflict:  [[fallthrough]];   -> falls into the next label
+#   case FilenameReserved:  break;     -> does nothing, and STOPS
+#
+# owncloudpropagator's golden has the second as `when ... / nil` and keeps
+# `StatusCount` as an arm of its own; with the break already gone the emitter
+# merged the two. See `GoldenHarness::Node::Statement#label_of`.
 # `case X: a(); b();` -> `case X: { a(); b(); }`
 #
 # A case label's statements are DIRECT CHILDREN of the case_statement, with no

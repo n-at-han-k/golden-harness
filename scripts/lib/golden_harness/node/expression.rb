@@ -17,6 +17,9 @@ module GoldenHarness
     # cast syntax, but it is the same thing and goes the same way.
     CASTS = %w[static_cast dynamic_cast reinterpret_cast const_cast].freeze
 
+    # Smart-pointer factories: the thing being made is the template argument.
+    MAKERS = %w[make_unique make_shared std::make_unique std::make_shared].freeze
+
     # Written as a constant so the `#{` cannot be read as interpolation here.
     INTERP_OPEN = ["#", "{"].join.freeze
 
@@ -57,7 +60,7 @@ module GoldenHarness
         when "call_expression" then call(node)
         when "binary_expression" then binary(node)
         when "unary_expression" then unary(node)
-        when "parenthesized_expression" then Paren(expr(@cst.named(node).first))
+        when "parenthesized_expression" then parenthesized(node)
         when "assignment_expression" then assignment(node)
         when "update_expression" then update(node)
         when "subscript_expression" then subscript(node)
@@ -87,6 +90,17 @@ module GoldenHarness
         end
       end
 
+      # `(x)`. The parens are kept as a node, because unparser does not add
+      # them by precedence -- except around an assignment a hoisted `while`
+      # has already lifted out, where only the target is left and the parens
+      # would wrap a bare name.
+      def parenthesized(node)
+        inner = @cst.named(node).first
+        return expr(inner) if inner && @condition_targets.include?(inner.start_byte)
+
+        Paren(expr(inner))
+      end
+
       # `_dbFile` is a member, and the leading underscore is the only thing
       # that says so -- 03_simplify.yml keeps it for exactly this reason.
       # A PascalCase name that is never a receiver is an enum value.
@@ -102,12 +116,14 @@ module GoldenHarness
         # to round-trip an lvar by that name because it would reparse as one.
         return Call(nil, MACROS[text]) if MACROS.key?(text)
         if text.start_with?("_")
-          bare = snake(text.sub(/\A_/, ""))
           # A local keeps its name without the underscore; a MEMBER becomes an
-          # ivar. The oracle says which -- see Facts#local?.
-          return Lvar(bare) if @facts.local?(@method_name, bare)
+          # ivar. The oracle says which -- and it is asked about the name AS
+          # WRITTEN, underscore included. Asking about the stripped name
+          # conflated `_item`, a member, with a `for (auto &item : ...)` local
+          # in the same method, and emitted the member as a bare `item`.
+          return Lvar(snake(text.sub(/\A_/, ""))) if @facts.local?(@method_name, snake(text))
 
-          return Ivar(bare)
+          return Ivar(snake(text.sub(/\A_/, "")))
         end
         return Sym(snake(text)) if @facts.enum_value?(text)
         return Const(text) if text.match?(/\A[A-Z]/)
@@ -119,7 +135,7 @@ module GoldenHarness
         # A LOCAL written with a leading underscore drops it; a member keeps it
         # as the `@`. Only the oracle can tell them apart -- see Facts#local?.
         bare = snake(text.sub(/\A_/, ""))
-        return reserved(bare) if text.start_with?("_") && @facts.local?(@method_name, bare)
+        return reserved(bare) if text.start_with?("_") && @facts.local?(@method_name, snake(text))
 
         reserved(snake(text))
       end
@@ -202,6 +218,8 @@ module GoldenHarness
         if fn.kind == "identifier"
           text = @cst.text(fn)
           return args.first if CASTS.include?(text) && args.one?
+          # `qint64(60 * 60)` -- a cast spelled as a call over a typedef.
+          return args.first if args.one? && @facts.scalar_type?(text)
           return Str("") if LITERAL_WRAPPERS.include?(text) && args.empty?
           if @facts.callable?(@function, text, @method_name) ||
              @facts.callable?(@function, local_name(text), @method_name)
@@ -220,13 +238,23 @@ module GoldenHarness
 
         # `f<T>(x)` -- the template arguments are types, which Ruby has no
         # place for, so only the name and the arguments survive.
-        if fn.kind == "template_function"
-          name = @cst.text(@cst.dig(fn, "identifier", field: :name))
-          return args.first if CASTS.include?(name) && args.one?
-          return template_call(fn, name, args) if args.one?
+        #
+        # A QUALIFIED one is reached through its `name` field:
+        # `std::make_unique<OwncloudPropagator>(...)` is a qualified_identifier
+        # whose name is the template_function, so a test on `fn.kind` alone
+        # missed it and the raw C++ text went out as a method name. That single
+        # line does not parse, and rubocop then corrects NOTHING in the file --
+        # which is where 450 lines of the syncengine diff came from.
+        template = @cst.child(fn, "template_function", field: :name)
+        return template_function(template, node, args) if template
 
-          return send_with_block(nil, name, node, args)
-        end
+        # `std::make_unique<OwncloudPropagator>(a, b, c)` constructs a T, so it
+        # is `T.new(a, b, c)`, and so does
+        # `QSharedPointer<AbortsFinished>(new AbortsFinished)`. The `< T > (...)`
+        # spelling the golden keeps is for a template FUNCTION like
+        # `qobject_cast`, which is not a class and does not even parse with
+        # more than one argument.
+        return template_function(fn, node, args) if fn.kind == "template_function"
 
         if fn.kind == "qualified_identifier"
           segments = @cst.text(fn).split("::")
@@ -250,6 +278,21 @@ module GoldenHarness
       # where they were. Reproduced deliberately: the golden is the
       # specification. Treating it as a cast instead gives `job = sender`,
       # which is what this did before.
+      # The `template_function` branch of `call`, reached either directly or
+      # through a qualified name's `name` field.
+      def template_function(fn, node, args)
+        name = @cst.text(@cst.dig(fn, "identifier", field: :name))
+        if MAKERS.include?(name)
+          type = @cst.dig(fn, "type_identifier", field: :arguments)
+          return send_with_block(ConstPath(@cst.text(type)), :new, node, args) if type
+        end
+        return args.first if CASTS.include?(name) && args.one?
+        return send_with_block(ConstPath(name), :new, node, args) if @facts.record?(name)
+        return template_call(fn, name, args) if args.one?
+
+        send_with_block(nil, name, node, args)
+      end
+
       def template_call(fn, name, args)
         argument = @cst.dig(fn, "type_identifier", field: :arguments)
         return Call(nil, name, *args) if argument.nil?
@@ -330,16 +373,39 @@ module GoldenHarness
         return [] if list.nil?
 
         last = @cst.last_named(list)
+        blockable = block_taking?(node)
         @cst.named(list).filter_map do |argument|
           # Compared by POSITION. tree-sitter hands back a fresh wrapper object
           # for every lookup, so `equal?` is never true and a trailing lambda
           # was being hoisted instead of becoming the block it should be.
           trailing = last && argument.start_byte == last.start_byte
           next hoist_lambda(node, argument) if
-            argument.kind == "lambda_expression" && !trailing
+            argument.kind == "lambda_expression" && !(trailing && blockable)
 
           expr(argument)
         end
+      end
+
+      # Whether a trailing lambda may become this call's BLOCK.
+      #
+      # It may for an ordinary method -- `connect(..., this) do ... end` is what
+      # the golden writes. It may not for two shapes:
+      #
+      #   erase_if(_syncItems, [&](auto &i) { ... })      erase_if is a lambda
+      #   std::is_sorted(begin, end, [](a, b) { ... })    a std algorithm
+      #
+      # `erase_if` is invoked with `.call`, and a Ruby block handed to `.call`
+      # never binds to the `pred` parameter; `std::` names no Ruby method at
+      # all. In both the lambda has to stay an argument, so it is hoisted.
+      def block_taking?(node)
+        fn = @cst.field(node, :function)
+        return true if fn.nil?
+        return false if fn.kind == "qualified_identifier" &&
+                        !@cst.text(fn).split("::").first.match?(/\A[A-Z]/)
+        return false if fn.kind == "identifier" &&
+                        @facts.callable?(@function, @cst.text(fn), @method_name)
+
+        true
       end
 
       # A lambda passed anywhere but LAST cannot be a block, and inline it
@@ -369,7 +435,11 @@ module GoldenHarness
         # lambda is a slot for the signal named before it, and the golden calls
         # it `on_sync_finished`. There is nothing else in the source to name it
         # after.
-        signal = arguments.select { _1.kind == "qualified_identifier" }.last
+        # A signal, not a flag: `Qt::QueuedConnection` is qualified too, and
+        # what tells them apart is that a signal's own name is a method and so
+        # begins lowercase.
+        signal = arguments.filter_map { @cst.dig(_1, "qualified_identifier") }
+                          .find { @cst.text(_1).split("::").last.match?(/\A[a-z]/) }
         return "callback" if signal.nil?
 
         "on_#{snake(@cst.text(signal).split("::").last)}"
@@ -419,6 +489,10 @@ module GoldenHarness
       end
 
       def assignment(node)
+        # Inside a hoisted `while` condition this assignment has already been
+        # emitted above the loop; here only its target is wanted.
+        return expr(@cst.field(node, :left)) if @condition_targets.include?(node.start_byte)
+
         target = @cst.field(node, :left)
         value = expr(@cst.field(node, :right))
         operator = @cst.text(@cst.field(node, :operator))
@@ -609,6 +683,14 @@ module GoldenHarness
 
       def initializer(node)
         values = @cst.named(node).filter_map { expr(_1) }
+        # As a call ARGUMENT a braced list is a container being built, so it
+        # stays one even with a single element: `entryList({ fn })` passes a
+        # QStringList of one, which the golden writes `entry_list([fn])`.
+        # Anywhere else `{ v }` is just the way C++ spells initialisation.
+        #
+        # An EMPTY one is excluded: `updatePlaceholder(item, fsPath, {})`
+        # passes a default-constructed QString, which is `nil`.
+        return n(:array, *values) if values.any? && @cst.parent?(node, "argument_list")
         return Nil_() if values.empty?
         return values.first if values.one?
 
@@ -669,8 +751,13 @@ module GoldenHarness
       # specification. Delete this one call to stop doing it.
       def arrows(text) = text.gsub("->", ".")
 
+      # Every escape C++ spells that Ruby spells the same way. The ones left
+      # out of the table lose their backslash, which is right for `\?` and
+      # wrong for the control characters -- csync_exclude's escape-expansion
+      # table writes all seven, and `\a` came out as a bare `a`.
       ESCAPES = {
-        "n" => "\n", "t" => "\t", "r" => "\r", "0" => "\0",
+        "a" => "\a", "b" => "\b", "e" => "\e", "f" => "\f", "n" => "\n",
+        "r" => "\r", "t" => "\t", "v" => "\v", "0" => "\0",
         "\\" => "\\", '"' => '"', "'" => "'"
       }.freeze
 
@@ -740,8 +827,10 @@ module GoldenHarness
         nil
       end
 
+      # `'\\'`, `'\n'`, `'\''` -- a char literal carries escapes just as a
+      # string does, and a `str` node holds the CHARACTER, not its spelling.
       def char_value(node)
-        @cst.text(node).sub(/\A'/, "").sub(/'\z/, "")
+        unescape(@cst.text(node).sub(/\A'/, "").sub(/'\z/, ""))
       end
 
       def number(node)

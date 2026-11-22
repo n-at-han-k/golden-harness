@@ -17,6 +17,7 @@ require:
   - ./cops/multiline_string.rb
   - ./cops/macro_parentheses.rb
   - ./cops/infix_operator.rb
+  - ./cops/array_brackets.rb
   - ./cops/block_delimiters.rb
   - ./cops/no_blank_line_before_branch.rb
   - ./cops/disable_syntax_ternary_autocorrect.rb
@@ -251,6 +252,13 @@ Transpile/SingleLineBlock:
   Description: >-
     Join a value-producing block onto one line. Unparser lays every block out
     across lines; the golden keeps a log-message block inline.
+
+Transpile/ArrayBrackets:
+  Enabled: true
+  Description: >-
+    Bracket an assigned array. Unparser emits the bare form for a
+    multi-element array and brackets a single-element one; the golden brackets
+    both.
 
 Transpile/InfixOperator:
   Enabled: true

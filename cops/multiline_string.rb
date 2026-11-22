@@ -84,11 +84,18 @@ module RuboCop
             rewrite(node.source_range, parts.map(&:source).join(" \\\n#{base}"))
           end
 
-          # An assigned value or a call argument aligns; a block body does not.
+          # An assigned value, a call argument or a returned value aligns; a
+          # block body does not.
+          #
+          # `return` belongs with the first group because
+          # `Layout/LineEndStringConcatenationIndentation` aligns it under the
+          # opening quote, and a cop here that indented it two columns instead
+          # would be undone on the next round -- the pair oscillate, rubocop
+          # gives up, and nothing else in the file gets corrected either.
           def aligned?(node)
             parent = node.parent
             return false if parent.nil?
-            return true if ASSIGNED.include?(parent.type)
+            return true if ASSIGNED.include?(parent.type) || parent.type == :return
             return false unless parent.send_type?
 
             parent.assignment_method? || parent.arguments.any? { _1.equal?(node) }

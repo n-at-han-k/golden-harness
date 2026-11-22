@@ -67,6 +67,9 @@ end
 CONTAINERS = {
   "QVector" => "array", "QList" => "array", "QStringList" => "array",
   "QByteArrayList" => "array", "vector" => "array", "std::vector" => "array",
+  # QStack and QQueue derive from QVector and QList: a Ruby array does both.
+  "QStack" => "array", "QQueue" => "array", "deque" => "array",
+  "std::deque" => "array", "stack" => "array", "std::stack" => "array",
   "QSet" => "set", "set" => "set", "std::set" => "set",
   "QMap" => "hash", "QHash" => "hash", "map" => "hash",
   "unordered_map" => "hash", "std::map" => "hash",
@@ -114,8 +117,15 @@ facts = {
   "shapes" => {},           # local name  -> empty-value shape
   "integers" => [],         # names of integral type -> `!x` is `x == 0`
   "locals" => [],           # function::name -> a local, not a member
-  "enum_types" => []        # an enum's own name: `LogStatus s(X)` constructs nothing
+  "enum_types" => [],       # an enum's own name: `LogStatus s(X)` constructs nothing
+  "scalar_types" => [],     # a typedef over a number: `qint64(x)` converts nothing
+  "dead" => []              # a free function nothing can reach -> not emitted
 }
+
+# The three sets `dead` is worked out from, which the walk fills as it goes.
+free_definitions = {}       # spelling -> true, a free function DEFINED here
+declared_elsewhere = {}     # spelling -> true, so a header publishes it
+referenced = {}             # spelling -> true, so something calls it
 
 source = ARGV[0]
 target = ARGV[1]
@@ -166,6 +176,10 @@ BODIES = %i[
   cursor_function_template cursor_conversion_function
 ].freeze
 
+# What a FREE function hangs off: nothing, or a namespace. A method hangs off
+# its class, and is reached through it.
+OWNERLESS = %i[cursor_translation_unit cursor_namespace].freeze
+
 def prune?(cursor)
   BODIES.include?(cursor.kind) && !cursor.location.from_main_file?
 end
@@ -194,13 +208,36 @@ visit(translation_unit.cursor, facts) do |cursor|
     facts["records"] << name
   when :cursor_enum_decl
     facts["enum_types"] << name
+  when :cursor_typedef_decl, :cursor_type_alias_decl
+    # `qint64` is Qt's name for a long long, and `qint64(60 * 60)` is a cast
+    # written as a call. Ruby has one integer type, so it carries nothing.
+    kind = (canonical(cursor.type)&.kind rescue nil)
+    facts["scalar_types"] << name if INTEGRAL.include?(kind) || kind == :type_bool
+    # An alias over a CLASS is constructible under its own name:
+    # `using SyncFileItemPtr = QSharedPointer<SyncFileItem>` makes
+    # `SyncFileItemPtr(x)` a construction, which Ruby spells `.new`.
+    facts["records"] << name if %i[type_record type_unexposed].include?(kind)
   when :cursor_function, :cursor_cxx_method
-    # Only this file's own functions: the system headers are full of static
-    # helpers (`__bswap_16`) that have internal linkage and nothing to do with
-    # the translation being produced.
-    next unless cursor.location.from_main_file?
+    # A declaration in a HEADER means the function is this library's published
+    # API, so it is kept even with no caller in the file -- it is reached from
+    # a translation unit the oracle is not looking at.
+    unless cursor.location.from_main_file?
+      declared_elsewhere[name] = true
+      next
+    end
 
     facts["internal"] << snake(name) if internal?(cursor)
+    # A free function, as against a method: a method is reached through its
+    # class and `_syncItems`-style callers libclang resolves differently.
+    # `semantic_parent` is the translation unit or a namespace for a free one.
+    if cursor.kind == :cursor_function && cursor.definition?
+      owner = cursor.semantic_parent&.kind
+      free_definitions[name] = true if OWNERLESS.include?(owner)
+    end
+  when :cursor_decl_ref_expr, :cursor_member_ref_expr, :cursor_call_expr
+    # Every mention of a name in the main file. The BODIES prune keeps this
+    # cheap: Qt's inline bodies are never descended into.
+    referenced[name] = true if cursor.location.from_main_file?
   when :cursor_variable, :cursor_field_decl, :cursor_parm_decl
     # This file's own names, plus any GLOBAL -- `autotestFailCounter` is an
     # `extern int` declared in a header, and its type is the fact that decides
@@ -242,9 +279,22 @@ facts["internal"] = facts["internal"].uniq.sort
 facts["integers"] = facts["integers"].uniq.sort
 facts["locals"] = facts["locals"].uniq.sort
 facts["enum_types"] = facts["enum_types"].uniq.sort
+facts["scalar_types"] = facts["scalar_types"].uniq.sort
+
+# DEAD CODE, which is what is left of the platform branches.
+#
+# `02_prepare` resolves `#ifdef _WIN32` away and libclang skips it for the same
+# reason, so the only call to `csync_is_windows_reserved_word` is gone -- but
+# its DEFINITION is not itself inside the conditional, so nothing removes it.
+# With no caller in the file and no declaration in a header, nothing can reach
+# it, and the constants it reads (`win_device_names`) go with it.
+dead = free_definitions.keys.reject { referenced[_1] || declared_elsewhere[_1] }
+facts["dead"] = dead.map { snake(_1) }.uniq.sort
+
 facts["diagnostics"] = errors
 
 File.write(target, JSON.pretty_generate(facts))
 warn "oracle: #{facts["enum_constants"].size} enum constants, " \
      "#{facts["records"].size} records, #{facts["internal"].size} internal, " \
-     "#{facts["shapes"].size} typed names, #{errors} diagnostics"
+     "#{facts["shapes"].size} typed names, #{facts["dead"].size} unreachable, " \
+     "#{errors} diagnostics"

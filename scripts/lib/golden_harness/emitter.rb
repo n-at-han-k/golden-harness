@@ -33,12 +33,12 @@ module GoldenHarness
       @facts = Facts.new(@cst, oracle)
       @function = nil
       @hoisted = []
-      @private_members = []
       @method_name = nil
       @class_name = nil
       @pending_updates = nil
       @pending_before = nil
       @constants = Set.new
+      @condition_targets = Set.new
       @operator_lhs = nil
       @operator_rhs = nil
       @ternary_branch = {}
@@ -79,6 +79,42 @@ module GoldenHarness
 
       # `using namespace FileSystem::SizeLiterals;` written INSIDE the
       # namespace, which belongs to the module rather than to the file.
+      # A file-scope constant that the unreachable code was the only reader of.
+      # `win_device_names` and `win_system_files` exist for
+      # `csync_is_windows_reserved_word` and for nothing else.
+      #
+      # Deliberately narrow: a constant has to be read by the DEAD code to be
+      # a candidate, so a genuinely unused one -- an exported constant this
+      # file only declares -- is still emitted.
+      def orphaned?(name)
+        mentions(name) < 2 && dead_mentions(name).positive?
+      end
+
+      def mentions(name) = live_names.fetch(name, 0)
+
+      def dead_mentions(name) = dead_names.fetch(name, 0)
+
+      def live_names = (@name_counts ||= count_names)[:live]
+
+      def dead_names = (@name_counts ||= count_names)[:dead]
+
+      # Every identifier in the file, split by whether it stands in a function
+      # the oracle marked unreachable.
+      def count_names
+        ranges = @cst.descendants(@cst.root)
+                     .select { _1.kind == "function_definition" && dead?(_1) }
+                     .map { [_1.start_byte, _1.end_byte] }
+        counts = { live: Hash.new(0), dead: Hash.new(0) }
+        @cst.each_node(@cst.root) do |node|
+          next unless node.kind == "identifier"
+
+          at = node.start_byte
+          where = ranges.any? { |from, to| at >= from && at < to } ? :dead : :live
+          counts[where][@cst.text(node)] += 1
+        end
+        counts
+      end
+
       def usings_in(body)
         @cst.named(body).filter_map do |node|
           next unless node.kind == "using_declaration"
@@ -141,7 +177,20 @@ module GoldenHarness
 
       # The namespaces, and anything at file scope outside one.
       def program
+        # A file with no `namespace` of its own still defines a class:
+        # csync_exclude.cpp declares `ExcludedFiles` globally, and the golden is
+        # a bare top-level `class ExcludedFiles`. Without this its methods came
+        # out as top-level defs and the constructor was never recognised.
+        return Body(class_blocks(@cst.root)) unless namespaced?
+
         Body(@cst.named(@cst.root).flat_map { top_level(_1) }.compact)
+      end
+
+      def namespaced?
+        @cst.named(@cst.root).any? do |node|
+          node.kind == "namespace_definition" &&
+            !@cst.dig(node, "namespace_identifier", field: :name).nil?
+        end
       end
 
       def top_level(node)
@@ -169,17 +218,21 @@ module GoldenHarness
         inner = class_name(body)
         @class_name = inner
 
-        # `namespace { ... }` with no name gives its contents INTERNAL LINKAGE:
-        # they are private to the translation unit. Ruby's equivalent is a
-        # private method, so they are held back and emitted under `private` at
-        # the end of the class rather than wrapped in a module of their own.
+        # `namespace { ... }` with no name gives its contents internal linkage.
+        # They are still ordinary members of the class the file defines: the
+        # goldens keep them public and in source position -- csync_exclude's
+        # `csync_exclude_expand_escapes`, owncloudpropagator's
+        # `critical_free_space_limit`, discovery's `static
+        # compute_local_checksum`.
+        #
+        # Hoisted rather than returned, because the block is a SIBLING of the
+        # named namespace, not a member of it: syncjournaldb.cpp writes
+        # `namespace { ... }` and then `namespace OCC { ... }`, so returning
+        # them put `get_p_hash` at the top of the file outside the module. The
+        # first class to be opened claims them, which is also the rule a
+        # constant among them follows -- Ruby cannot assign one in a method.
         unless named
-          internal = @cst.named(body).flat_map { top_level(_1) }.compact
-          # A constant among them belongs to the class: Ruby cannot assign one
-          # inside a method, so it cannot live in the `private` section.
-          constants, methods = internal.partition { _1.type == :casgn }
-          @hoisted.concat(constants)
-          @private_members.concat(methods)
+          @cst.named(body).flat_map { top_level(_1) }.compact.each { hoist_into(nil, _1) }
           return []
         end
 
@@ -203,8 +256,16 @@ module GoldenHarness
           if child.kind == "function_definition"
             # A free function at namespace scope keeps the scope it is written
             # among, which is where the golden puts such a helper.
-            at = definition_scope(child) || (scope == :none ? nil : scope)
-            if at != scope
+            # A free function at namespace scope has no scope of its own. One
+            # written BEFORE any method stays unresolved, so the first class to
+            # come along claims it -- owncloudpropagator.cpp opens with
+            # `criticalFreeSpaceLimit()` and the golden puts it at the top of
+            # `class OwncloudPropagator`. One written after a method inherits
+            # that method's class, which is where such a helper belongs.
+            at = definition_scope(child) || (scope == :none ? :none : scope)
+            if scope == :none
+              scope = at
+            elsif at != scope
               blocks << [scope, current] unless current.empty?
               scope = at
               current = []
@@ -220,21 +281,55 @@ module GoldenHarness
         assemble(blocks)
       end
 
-      # The hoisted constants open the first block; the private section closes
-      # the last one.
+      # The hoisted members join the first block: its constants at the very
+      # top, its methods after the initializer.
       def assemble(blocks)
         return [] if blocks.empty?
 
-        blocks.first[1] = @hoisted + blocks.first[1]
+        hoisted = @hoisted
         @hoisted = []
-        if @private_members.any?
-          blocks.last[1] += [Call(nil, :private), *@private_members]
-          @private_members = []
+        hoisted.group_by(&:first).each do |scope, pairs|
+          members = pairs.map(&:last)
+          # The block the member was written in, or the first one -- which is
+          # where a file-scope hoist belongs, there being no method it came
+          # from.
+          target = blocks.find { _1.first == scope } || blocks.first
+          constants, methods = members.partition { _1.type == :casgn }
+          target[1] = constants + after_initializer(methods, target[1])
         end
 
         blocks.map do |(scope, members)|
-          scope && scope != :none ? Class_(scope, Body(members)) : Body(members)
+          next Body(members) if scope.nil? || scope == :none
+
+          # `OCC::operator<<(...)` is qualified with a NAMESPACE, not a class,
+          # and `class OCC` is wrong -- the oracle knows which names are
+          # records, and everything else that can hold a definition is a
+          # namespace.
+          @facts.record?(scope) ? Class_(scope, Body(members)) : Module_(scope, Body(members))
         end
+      end
+
+      # A member lifted out of a method body to the class that holds it.
+      #
+      # `struct AbortsFinished { ... }` is declared inside
+      # `PropagateRootDirectory::abort` and Ruby has no struct-in-a-method, so
+      # it becomes a class-level `Struct.new` -- of THAT class. A single
+      # file-wide list put it in the first class the file opens.
+      def hoist_into(scope, member)
+        @hoisted << [scope, member]
+      end
+
+      # `Layout/ClassStructure` puts `initializer` ahead of `public_methods`,
+      # which is the order csync_exclude's golden has -- the anonymous
+      # namespace is written first in the C++ and `initialize` still comes
+      # first. Done here rather than left to the cop: its autocorrect moves the
+      # def but writes `end    def get_p_hash`, which does not parse, and every
+      # cop after it in the run is then skipped.
+      def after_initializer(methods, members)
+        return members if methods.empty?
+
+        at = members.index { _1.type == :def && _1.children.first == :initialize }
+        at ? members[0..at] + methods + members[(at + 1)..] : methods + members
       end
 
       def definition_scope(node)
@@ -271,10 +366,32 @@ module GoldenHarness
       # anonymous namespace, which `namespace` handles structurally. The fact
       # is recorded either way; placement does not use it.
       def function(node)
-        operator = operator_equality(node)
+        return [] if dead?(node)
+
+        operator = operator_equality(node) || operator_stream(node)
         return operator if operator
 
         [method(node)].compact
+      end
+
+      # A function the oracle found nothing can reach.
+      #
+      # `02_prepare` resolves the platform conditionals, so the `#ifdef _WIN32`
+      # block holding the only call to `csync_is_windows_reserved_word` is gone
+      # -- but its definition sits OUTSIDE the conditional, so the preprocessor
+      # pass has nothing to remove it by and it survives with no caller and no
+      # declaration in any header.
+      def dead?(node)
+        name = unqualified_name(node)
+        !name.nil? && @facts.dead?(snake(name))
+      end
+
+      # The declarator's own name, only when it is unqualified: a `Class::name`
+      # definition is a method, reached through its class, and is never dead.
+      def unqualified_name(node)
+        declarator = @cst.dig(node, "function_declarator", field: :declarator)
+        name = declarator && @cst.child(declarator, "identifier", field: :declarator)
+        name && @cst.text(name)
       end
 
       # A free `operator==(const T &lhs, const T &rhs)` is T's own `==`.
@@ -309,6 +426,37 @@ module GoldenHarness
         @operator_rhs = nil
 
         [Class_(@cst.text(type), Def("==", ["other"], body))]
+      end
+
+      # `QDebug OCC::operator<<(QDebug debug, const SyncJournalFileRecord &r)`
+      # renders a record, which in Ruby is the record's own `to_s`. Both names
+      # stay locals, because the body writes into `debug` as well as reading
+      # `r` -- unlike `operator==`, where the left operand becomes the
+      # receiver.
+      #
+      # Without this the declarator has no `identifier` at all and the emitter
+      # wrote `def (debug, record)`, which does not parse -- so rubocop
+      # corrected nothing in the file.
+      def operator_stream(node)
+        declarator = @cst.dig(node, "function_declarator", field: :declarator)
+        return nil if declarator.nil?
+
+        name = @cst.dig(declarator, "operator_name", field: :declarator) ||
+               @cst.child(declarator, "operator_name")
+        return nil if name.nil? || @cst.text(name) != "operator<<"
+
+        parameters = @cst.named(@cst.field(declarator, :parameters))
+        return nil unless parameters.size == 2
+
+        type = @cst.dig(parameters[1], "type_identifier")
+        stream = @cst.dig(parameters[0], "identifier", field: :declarator)
+        return nil if type.nil? || stream.nil?
+
+        @function = node
+        body = Body(statements_of(@cst.field(node, :body)))
+        @function = nil
+
+        [Class_(@cst.text(type), Def("to_s", [@cst.text(stream)], body))]
       end
 
       # `void A::f(a, b) { ... }` -> `def f(a, b)`.
@@ -370,8 +518,13 @@ module GoldenHarness
       # `wipeErrorBlacklistEntry(file)` and `wipeErrorBlacklistEntry(file,
       # category)` would collide, so the second takes the name of the argument
       # that distinguishes it -- which is what the golden calls it.
+      #
+      # Counted PER CLASS. owncloudpropagator.cpp defines five classes and four
+      # of them override `scheduleSelfOrChild`, which a file-wide count turned
+      # into `schedule_self_or_child_2`, `_3` and `_4` -- they are not
+      # overloads of each other, they are overrides.
       def disambiguate(name, declarator)
-        seen = (@method_names ||= {})
+        seen = ((@method_names ||= {})[@class_name] ||= {})
         count = seen[name] = seen.fetch(name, 0) + 1
         return name if count == 1
 
@@ -486,6 +639,7 @@ module GoldenHarness
         name = init && @cst.dig(init, "identifier")
         value = init && @cst.field(init, :value)
         return [] if name.nil? || value.nil?
+        return [] if orphaned?(@cst.text(name))
 
         @constants << @cst.text(name)
         [Constant(snake(@cst.text(name)).upcase, expr(value))]

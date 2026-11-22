@@ -74,6 +74,11 @@ module GoldenHarness
     # private method.
     def internal?(name) = internal.include?(name)
 
+    # A free function nothing in the translation unit can reach, because the
+    # platform conditional holding its only caller was resolved away and no
+    # header publishes it. `csync_is_windows_reserved_word` is the one.
+    def dead?(name) = dead.include?(name)
+
     # A class, struct or union the headers declare -- so `Foo(args)` is a
     # constructor and becomes `Foo.new(args)`.
     def record?(name) = records.include?(name)
@@ -81,6 +86,9 @@ module GoldenHarness
     # An enum's own type name. `LogStatus status(LogStatusRename)` has a
     # constructor's shape and constructs nothing.
     def enum_type?(name) = enum_types.include?(name)
+
+    # A typedef over a number, so a call of that name is a cast.
+    def scalar_type?(name) = scalar_types.include?(name)
 
     # A name declared as a local in this function rather than a member of the
     # class, which is what decides whether a leading `_` becomes an `@`.
@@ -106,9 +114,13 @@ module GoldenHarness
 
       def internal = @internal ||= Set.new(@oracle.fetch("internal", []))
 
+      def dead = @dead ||= Set.new(@oracle.fetch("dead", []))
+
       def locals = @locals ||= Set.new(@oracle.fetch("locals", []))
 
       def enum_types = @enum_types ||= Set.new(@oracle.fetch("enum_types", []))
+
+      def scalar_types = @scalar_types ||= Set.new(@oracle.fetch("scalar_types", []))
 
       def scan
         @cst.each_node(@cst.root) do |node|

@@ -19,6 +19,15 @@ module GoldenHarness
 
     STRING_TYPES = %w[QString QByteArray QLatin1String].freeze
 
+    # A type that is a VIEW of what it is given, not a container of its own.
+    # `QStringView bname(path)` does not copy `path`, it reads it -- and a Ruby
+    # string needs no view, so the declaration is an alias.
+    #
+    # Declarations only. `names.contains(QStringView{i->localName()})` keeps
+    # its wrapper in the golden, because there the view is an argument and not
+    # a name being bound.
+    VIEW_TYPES = %w[QStringView QByteArrayView QLatin1StringView].freeze
+
     private
 
       def statements_of(block)
@@ -100,10 +109,10 @@ module GoldenHarness
         when "continue_statement" then [Next_()]
         when "break_statement" then [Break_()]
         when "if_statement" then [if_statement(node)]
-        when "while_statement" then [While(condition(node), Body(statements_of(@cst.field(node, :body))))]
-        when "do_statement" then [Loop(Body(statements_of(@cst.field(node, :body))))]
+        when "while_statement" then while_statement(node)
+        when "do_statement" then [do_while(node)]
         when "for_range_loop" then [for_range(node)]
-        when "for_statement" then [counted_for(node)]
+        when "for_statement" then counted_for(node)
         when "switch_statement" then [switch(node)]
         when "labeled_statement" then statements_of(node)
         else [expr(node)].compact
@@ -131,7 +140,7 @@ module GoldenHarness
       # A type declared inside a body is still a type: it becomes a constant on
       # the class, so it is hoisted out and nothing is emitted in its place.
       def hoist(node)
-        @hoisted << struct(node) if @cst.field(node, :body) && @cst.field(node, :name)
+        hoist_into(@class_name, struct(node)) if @cst.field(node, :body) && @cst.field(node, :name)
         []
       end
 
@@ -139,11 +148,16 @@ module GoldenHarness
       def declaration(node)
         type = @cst.field(node, :type)
         if type && %w[struct_specifier class_specifier].include?(type.kind)
-          @hoisted << struct(type) if @cst.field(type, :body)
+          hoist_into(@class_name, struct(type)) if @cst.field(type, :body)
           return []
         end
 
-        return [map_declaration(node)] if map_type(node)
+        # A map declared with no initialiser needs Ruby's default-block form,
+        # because `QMap<K, V>::operator[]` default-constructs a missing value.
+        # One declared WITH an initialiser is just that value, and treating
+        # `const QMap<QString, Status> errorPaths = subJob->errorPaths();` as
+        # the empty form dropped the call.
+        return [map_declaration(node)] if map_type(node) && !initialised?(node)
 
         type = declaration_type(node)
 
@@ -166,7 +180,7 @@ module GoldenHarness
           # The parens a `#define` body is written with group nothing once it
           # is an assignment, and the golden drops them.
           value = @cst.named(value).first if value.kind == "parenthesized_expression"
-          @hoisted << Constant(@cst.text(name), expr(value))
+          hoist_into(@class_name, Constant(@cst.text(name), expr(value)))
           return []
         end
 
@@ -179,7 +193,7 @@ module GoldenHarness
           # is just the literal; there is no Qt string type in Ruby. Same
           # reasoning as the QStringLiteral wrappers.
           return [Local(local_name(@cst.text(name)), values.first)] if
-            values.one? && STRING_TYPES.include?(@cst.text(type))
+            values.one? && aliased?(@cst.text(type))
 
           return [Local(local_name(@cst.text(name)), Call(ConstPath(@cst.text(type)), :new, *values))]
         end
@@ -195,6 +209,10 @@ module GoldenHarness
       end
 
       def declaration_type(node) = @cst.field(node, :type)
+
+      # A type whose one-argument construction carries nothing into Ruby: a Qt
+      # string built from a string, or a view onto one.
+      def aliased?(name) = STRING_TYPES.include?(name) || VIEW_TYPES.include?(name)
 
       def constructible?(type)
         return false unless type.kind == "type_identifier"
@@ -238,6 +256,12 @@ module GoldenHarness
         return nil if name.nil?
 
         values = @cst.named(@cst.field(declarator, :parameters)).map { fragment(@cst.text(_1)) }
+        # `QStringView bname(path)` reaches here rather than the branch below,
+        # because an argument that is a bare NAME makes the whole declaration
+        # read as a function declarator.
+        return [Local(local_name(@cst.text(name)), values.first)] if
+          values.one? && aliased?(@cst.text(type))
+
         [Local(local_name(@cst.text(name)), Call(ConstPath(@cst.text(type)), :new, *values))]
       end
 
@@ -251,6 +275,11 @@ module GoldenHarness
         args = @cst.named(@cst.field(template, :arguments))
         value = args[1] && @cst.dig(args[1], "type_identifier")
         value && @cst.text(value)
+      end
+
+      def initialised?(node)
+        init = @cst.child(node, "init_declarator", field: :declarator)
+        !init.nil? && !@cst.field(init, :value).nil?
       end
 
       def map_declaration(node)
@@ -424,6 +453,45 @@ module GoldenHarness
         If(condition(node), Body(statements_of(@cst.field(node, :consequence))), else_body)
       end
 
+      # `do { ... } while (cond);` -- the body runs before the test, which is
+      # what `loop do` with the test at the BOTTOM says:
+      #
+      #   loop do
+      #     ...
+      #     unless index > 0
+      #       break
+      #     end
+      #   end
+      #
+      # Emitting `loop do ... end` and dropping the condition, which is what
+      # this did before, is an infinite loop.
+      def do_while(node)
+        body = statements_of(@cst.field(node, :body))
+        test = condition(node)
+        Loop(Body(body + [Unless(test, Break_())]))
+      end
+
+      # `while ((index = p.lastIndexOf('/')) != -1)`.
+      #
+      # Ruby allows the assignment in the condition, but the golden lowers it
+      # the way the C++ reads: bind it once before the loop, test the variable,
+      # and bind it again as the last thing the body does. The value is read
+      # twice per iteration either way.
+      def while_statement(node)
+        clause = @cst.field(node, :condition)
+        inner = clause && @cst.named(clause).reject { _1.kind == "init_statement" }.first
+        found = inner && @cst.dig(inner, "assignment_expression")
+        body = statements_of(@cst.field(node, :body))
+        return [While(condition(node), Body(body))] if found.nil?
+
+        hoisted = expr(found)
+        @condition_targets << found.start_byte
+        test = expr(inner)
+        @condition_targets.delete(found.start_byte)
+
+        [hoisted, While(test, Body(body + [hoisted]))]
+      end
+
       def condition(node)
         clause = @cst.field(node, :condition)
         # Past an init_statement, which if_statement has already hoisted out.
@@ -445,12 +513,49 @@ module GoldenHarness
       # induction variable visible. Anything else lowers to `loop do` with the
       # init and step left in the body, which is what it did before.
       def counted_for(node)
-        body = Body(statements_of(@cst.field(node, :body)))
+        stmts = statements_of(@cst.field(node, :body))
         range = for_range_of(node)
-        return Loop(body) if range.nil?
+        return counted_while(node, stmts) if range.nil?
 
         name, limit = range
-        CallBlock(Call(Paren(ExclusiveRange(Int(0), limit)), :each), [name], body)
+        # `.each` only when the body leaves the counter alone. csync_exclude's
+        # escape loop does `++i` again inside the body to skip an escaped pair,
+        # and a block parameter cannot carry that.
+        return counted_while(node, stmts) if assigns?(@cst.field(node, :body), name)
+
+        [CallBlock(Call(Paren(ExclusiveRange(Int(0), limit)), :each), [name], Body(stmts))]
+      end
+
+      # The counted loop written out, for every `for` that `.each` cannot
+      # express: one with no initialiser (`for (; j < len; ++j)`), one counting
+      # from somewhere other than zero, one whose body moves the counter
+      # itself. The initialiser goes before the loop and the update at the end
+      # of its body, which is the `while` form the goldens have.
+      #
+      # `continue` inside such a body skips the update, where C++ would have
+      # run it. The goldens are written this way regardless, so the shape is
+      # theirs; `_csync_excluded_common` has no `continue` in one.
+      def counted_while(node, stmts)
+        test = @cst.field(node, :condition)
+        return [Loop(Body(stmts))] if test.nil?
+
+        initializer = @cst.child(node, "declaration", field: :initializer)
+        advance = @cst.field(node, :update)
+        before = initializer ? declaration(initializer) : []
+        after = advance ? [expr(advance)].compact : []
+        before + [While(expr(test), Body(stmts + after))]
+      end
+
+      # Whether this block assigns the name -- by `=`, `+=`, `++` or `--`.
+      def assigns?(body, name)
+        return false if body.nil?
+
+        @cst.descendants(body).any? do |node|
+          next false unless %w[assignment_expression update_expression].include?(node.kind)
+
+          target = @cst.field(node, node.kind == "update_expression" ? :argument : :left)
+          target && @cst.text(target) == name
+        end
       end
 
       def for_range_of(node)
@@ -466,7 +571,28 @@ module GoldenHarness
         return nil if name.nil? || start.nil? || @cst.text(start) != "0"
         return nil unless @cst.text(@cst.field(condition, :left)) == @cst.text(name)
 
-        [@cst.text(name), expr(@cst.field(condition, :right))]
+        limit = expr(@cst.field(condition, :right))
+        # `.each` reads the limit ONCE; the C++ `for` re-reads it on every
+        # iteration. That only makes no difference when the limit cannot change
+        # under the loop, so a member is excluded -- which is exactly where the
+        # two goldens part company over the same C++ shape:
+        #
+        #   for (int i = 0; i < segments.size(); ++i)        -> (0...).each
+        #   for (int i = 0; i < _runningJobs.count(); ++i)   -> while
+        #
+        # `segments` is a local built just above its loop. `_runningJobs` is a
+        # member, and the second loop's own body calls `possiblyRunNextJob`,
+        # which can add to it.
+        return nil if mentions_ivar?(limit)
+
+        [@cst.text(name), limit]
+      end
+
+      def mentions_ivar?(node)
+        return false unless node.is_a?(::Parser::AST::Node)
+        return true if node.type == :ivar
+
+        node.children.any? { mentions_ivar?(_1) }
       end
 
       # A block's statements, ignoring those that carry no meaning in Ruby.
@@ -474,30 +600,79 @@ module GoldenHarness
         @cst.named(body).reject { fallthrough?(_1) }
       end
 
+      # A case arm's statements, with a `break` in the MIDDLE of the arm folded
+      # away. `label_of` removes the one that ends an arm, which has
+      # no counterpart in a `when`; one in the middle is doing real work -- it
+      # skips the rest of the arm -- and Ruby has nothing that does that:
+      #
+      #   if (j == len) {              if j == len
+      #       regex.append("\\[");       regex.append("\\[")
+      #       break;                   else
+      #   }                     ->       bracket_expr = ...
+      #   bracketExpr = ...;             regex.append(bracket_expr)
+      #   regex.append(bracketExpr);   end
+      #
+      # Leaving the `break` in would be worse than redundant: the switch sits
+      # inside a `while`, so Ruby would break the LOOP.
+      def arm(nodes)
+        at = nodes.index { breaking_if?(_1) }
+        return nodes.flat_map { stmt(_1) }.compact if at.nil? || at == nodes.size - 1
+
+        guard = nodes[at]
+        taken = @cst.named(@cst.field(guard, :consequence))
+                    .reject { _1.kind == "break_statement" }
+                    .flat_map { stmt(_1) }.compact
+        nodes[0...at].flat_map { stmt(_1) }.compact +
+          [If(condition(guard), Body(taken), Body(arm(nodes[(at + 1)..])))]
+      end
+
+      # An `if` with no `else` whose body ends with the switch's own `break`.
+      def breaking_if?(node)
+        return false unless node.kind == "if_statement"
+        return false unless @cst.field(node, :alternative).nil?
+
+        consequence = @cst.field(node, :consequence)
+        return false unless consequence&.kind == "compound_statement"
+
+        @cst.named(consequence).last&.kind == "break_statement"
+      end
+
       # A C++ `switch` is a Ruby `case`. 03_simplify.yml has already braced
-      # every body and dropped the trailing `break`, so each label has exactly
-      # one block under it.
+      # every body, so each label has exactly one block under it.
       def switch(node)
-        subject = condition(node)
+        labels = @cst.named(@cst.field(node, :body))
+                     .select { _1.kind == "case_statement" }
+                     .map { label_of(_1) }
         whens = []
         else_body = nil
         pending = []
 
-        @cst.named(@cst.field(node, :body)).each do |label|
-          next unless label.kind == "case_statement"
-
-          value = @cst.field(label, :value)
-          body = @cst.child(label, "compound_statement")
-          # An empty label shares the next one's body: in C++ it falls through,
-          # so the faithful Ruby is one `when` with both values. A label whose
-          # body is nothing but `[[fallthrough]];` says the same thing out loud.
-          if body.nil? || effective(body).empty?
-            pending << expr(value) if value
+        labels.each_with_index do |(value, nodes, closes), index|
+          # A label with nothing under it shares the next one's body: in C++ it
+          # falls through, so the faithful Ruby is one `when` with both values.
+          # A label whose body is nothing but `[[fallthrough]];` says the same
+          # thing out loud.
+          #
+          # `closes` is what separates that from a label whose body was nothing
+          # BUT a `break` -- a deliberate no-op that stops. The golden gives
+          # that one its own `when ... / nil`.
+          if nodes.empty? && !closes && value
+            pending << value
             next
           end
 
+          # `default: break;` is a C++ formality -- a switch over an enum needs
+          # one to be exhaustive -- and the golden writes no `else` for it.
+          next if nodes.empty? && value.nil?
+
+          body =
+            if nodes.empty?
+              Nil_()
+            else
+              Body(arm(nodes) + continuation(labels, index, closes))
+            end
           if value
-            whens << When(pending + [expr(value)], Body(statements_of(body)))
+            whens << When(pending + [value], body)
           else
             # `default:` closes the run rather than absorbing it. The values
             # that fell through this far behave exactly as the default does,
@@ -508,7 +683,7 @@ module GoldenHarness
             #     nil
             #   else
             whens << When(pending, Nil_()) if pending.any?
-            else_body = Body(statements_of(body))
+            else_body = body
           end
           pending = []
         end
@@ -516,7 +691,65 @@ module GoldenHarness
         # A run still open at the end of the switch is its own `when` too.
         whens << When(pending, Nil_()) if pending.any?
 
-        Case(subject, whens, else_body)
+        Case(subject(node), whens, else_body)
+      end
+
+      def subject(node) = condition(node)
+
+      # One case label, as `[value, statements, closes?]`.
+      #
+      # The trailing `break` is dropped HERE rather than by a rule, because
+      # whether it was there is the only thing separating an arm that falls
+      # through from an arm that deliberately does nothing.
+      def label_of(label)
+        value = @cst.field(label, :value)
+        body = @cst.child(label, "compound_statement")
+        nodes = body ? @cst.named(body).reject { _1.kind == "comment" || fallthrough?(_1) } : []
+        closes = !nodes.empty? && terminates?(nodes.last)
+        nodes = nodes[0..-2] if nodes.last&.kind == "break_statement"
+        [value && expr(value), nodes, closes]
+      end
+
+      # C++ runs ON into the arms below one that does not end in `break` or
+      # `return`. Ruby's `when` does not, so those arms are repeated here:
+      # `CSYNC_INSTRUCTION_NEW` returns a job when the item is a directory and
+      # otherwise goes on to do exactly what `CSYNC_INSTRUCTION_SYNC` does, and
+      # that is how the golden has it, written out in both arms.
+      def continuation(labels, index, closes)
+        out = []
+        until closes || (index += 1) >= labels.size
+          _value, nodes, closes = labels[index]
+          out.concat(arm(nodes))
+        end
+        out
+      end
+
+      # Whether control can reach the end of this statement. An arm ending in
+      # an `if`/`else` whose both branches return cannot fall through, which is
+      # why `CSYNC_INSTRUCTION_REMOVE` is not given the arms below it.
+      def terminates?(node)
+        case node&.kind
+        when "break_statement", "return_statement", "continue_statement",
+             "goto_statement", "throw_statement"
+          true
+        when "compound_statement"
+          terminates?(@cst.named(node).last)
+        when "if_statement"
+          alternative = @cst.field(node, :alternative)
+          return false if alternative.nil?
+
+          terminates?(@cst.field(node, :consequence)) &&
+            terminates?(@cst.named(alternative).first)
+        when "expression_statement"
+          # `Q_UNREACHABLE()` is `[[noreturn]]`, and becomes `raise`. Without
+          # this, discovery's `case CSYNC_NOT_EXCLUDED: Q_UNREACHABLE();` read
+          # as falling through and collected the arm below it.
+          call = @cst.dig(node, "call_expression")
+          name = call && @cst.field(call, :function)
+          !name.nil? && name.kind == "identifier" && UNREACHABLE.include?(@cst.text(name))
+        else
+          false
+        end
       end
   end
 end

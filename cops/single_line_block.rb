@@ -20,10 +20,14 @@ module RuboCop
       # at 118.
       #
       # What separates them is what the block is FOR. A log message block takes
-      # no parameters and its body is one expression whose value is the whole
-      # point. A loop or an initialiser block takes parameters and runs
-      # statements for their effect. So: no parameters, one expression, no
-      # assignment.
+      # no parameters and its body is one expression. A loop or an initialiser
+      # block takes parameters and runs statements for their effect.
+      #
+      # Width is not part of it, and nor is which call it is: the golden inlines
+      # `QTimer.single_shot(10, this) { ... }` and a 131-column `Log.info`
+      # block alike, and leaves `connect(...) do ... end` open because its body
+      # is several statements. A body that already spans lines is left alone,
+      # which is what keeps the `Log.info { if ... end }` block open.
       #
       # Deliberately NO width limit. The golden inlines this block at 131
       # columns, and `Layout/LineLength` is disabled in this project precisely
@@ -64,6 +68,21 @@ module RuboCop
         end
 
         private
+
+          # Which CALLS take a brace block.
+          #
+          # Read off the goldens: `lambda { ... }` and `Log.info(...) { ... }`
+          # keep braces, and every other block -- `connect(...)`, `.each`,
+          # `Hash.new` -- is written `do ... end`. The body alone does not
+          # separate them: `connect(..., context) do ... end` and
+          # `Log.info(...) { if ... end }` both hold a single `if`.
+          def braced_call?(node)
+            send_node = node.send_node
+            return true if send_node.method?(:lambda) && send_node.receiver.nil?
+
+            receiver = send_node.receiver
+            !receiver.nil? && receiver.const_type? && receiver.short_name == :Log
+          end
 
           def branching?(node) = %i[if case].include?(node.type)
 

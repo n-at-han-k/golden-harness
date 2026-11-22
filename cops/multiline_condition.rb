@@ -218,6 +218,7 @@ module RuboCop
         def wrap_condition(node)
           condition = node.condition
           return if condition.nil? || !boolean?(condition)
+          return if pending_infix?(condition)
           return unless wrappable?(condition) || canonical?(condition)
 
           # Whether the GROUP is why this wrapped. A short condition wraps only
@@ -343,6 +344,12 @@ module RuboCop
         # ever was -- which pushed a 58-column condition over the 60 limit on
         # alternate passes, so the cop expanded the group, collapsed it,
         # expanded it again, and rubocop stopped on whichever came last.
+        # A condition `Transpile/InfixOperator` has yet to rewrite. Its width is
+        # not final, and `len.-(1)` is a character wider than `len - 1`.
+        def pending_infix?(condition)
+          condition.each_node(:send).any? { InfixOperator.pending?(_1) }
+        end
+
         def flat(node)
           node.source.gsub(/\s*\n\s*/, " ").gsub(/\(\s+/, "(").gsub(/\s+\)/, ")")
         end
