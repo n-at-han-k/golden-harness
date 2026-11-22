@@ -32,6 +32,12 @@ require "qthreadpool"
 
 module OCC
   class ProcessDirectoryJob
+    Entries = Struct.new(
+      :db_entry,
+      :server_entry,
+      :local_entry,
+      keyword_init: true
+    )
     def start
       Log.info("sync.discovery") { "STARTING #{@current_folder.server} #{@query_server} #{@current_folder.local} #{@query_local}" }
 
@@ -63,13 +69,6 @@ module OCC
         process
       end
     end
-
-    Entries = Struct.new(
-      :db_entry,
-      :server_entry,
-      :local_entry,
-      keyword_init: true
-    )
 
     def process
       unless @local_query_done && @server_query_done

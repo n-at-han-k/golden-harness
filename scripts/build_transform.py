@@ -102,18 +102,38 @@ def statement_tier(tier: int) -> str:
     t = f"-{tier}"
     last = tier >= DEPTH
     nxt = stmt_ids(tier + 1, leaves_only=(tier + 1 >= DEPTH)) if not last else None
+    # The NEXT tier's expression rewriters.
+    #
+    # A rewriter that emits a captured argument list must rewrite it, or nothing
+    # inside is ever processed: l-new emitted `$NT.new$NA` and l-lcall
+    # `$LNAME.call$LCARGS` with the list verbatim, which left enum values as
+    # bare constants and a nested lambda call without its `.call`. It has to be
+    # the NEXT tier's list, not this one's, because this one contains the
+    # rewriter doing the asking and ast-grep has no cycle guard -- a
+    # self-referencing rewriter overflows the stack.
+    expr_rw_nxt = (f"[l-iife-{tier + 1}, l-new-{tier + 1}, l-new0-{tier + 1}, "
+                   f"l-brace-init-{tier + 1}, l-addr-{tier + 1}, "
+                   f"l-lcall-{tier + 1}, l-lbare-{tier + 1}, "
+                   f"l-enum-{tier + 1}, l-enum-value-{tier + 1}]"
+                   if not last
+                   # At the deepest tier there is no next list, so fall back to
+                   # the two rewriters that do not themselves descend into an
+                   # argument list and so cannot recurse.
+                   else f"[l-enum-{tier}, l-enum-value-{tier}]")
+
     inside = "inside: { kind: compound_statement }"
     # Expression-position rewriters. l-call only exists while a next tier does,
     # since it rewrites the lambda body through it.
-    expr_rw = (f"[l-iife-{tier}, l-lambda-arg-{tier}, l-lambda0-arg-{tier}, "
+    expr_rw = (f"[l-iife-{tier}, l-call-{tier}, l-call0-{tier}, "
+               f"l-lambda-arg-{tier}, l-lambda0-arg-{tier}, "
                f"l-lambda-{tier}, l-lambda0-{tier}, l-call-brace-{tier}, "
                f"l-new-{tier}, l-new0-{tier}, l-brace-init-{tier}, "
                f"l-addr-{tier}, l-lcall-{tier}, l-lbare-{tier}, "
-               f"l-enum-{tier}]"
+               f"l-enum-{tier}, l-enum-value-{tier}]"
                if not last
                else f"[l-iife-{tier}, l-new-{tier}, l-new0-{tier}, "
                     f"l-brace-init-{tier}, l-addr-{tier}, l-lcall-{tier}, "
-                    f"l-lbare-{tier}, l-enum-{tier}]")
+                    f"l-lbare-{tier}, l-enum-{tier}, l-enum-value-{tier}]")
 
     out = f"""  # ---- statement tier {tier} ----------------------------------------------
   # `struct Entries {{ A a; B b; }};` -> `Entries = Struct.new(:a, :b, keyword_init: true)`
@@ -249,7 +269,10 @@ def statement_tier(tier: int) -> str:
               all:
                 - has: {{ field: declarator, kind: identifier, pattern: $LNAME }}
                 - has: {{ field: value, kind: lambda_expression }}
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: {{ rewriters: {expr_rw_nxt}, source: $LCARGS }}
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -271,6 +294,43 @@ def statement_tier(tier: int) -> str:
                 - has: {{ field: declarator, kind: identifier, pattern: $LBNAME }}
                 - has: {{ field: value, kind: lambda_expression }}
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value{t}
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: {{ field: scope, pattern: $EV }}
+              - kind: call_expression
+                has: {{ field: function, kind: identifier, pattern: $EV }}
+              - kind: field_expression
+                has: {{ field: argument, kind: identifier, pattern: $EV }}
+    transform:
+      EVSYM:
+        convert: {{ source: $EV, toCase: snakeCase }}
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -313,7 +373,10 @@ def statement_tier(tier: int) -> str:
       all:
         - has: {{ field: type, pattern: $NT }}
         - has: {{ field: arguments, kind: argument_list, pattern: $NA }}
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: {{ rewriters: {expr_rw_nxt}, source: $NA }}
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0{t}
     rule:
@@ -850,6 +913,12 @@ def statement_tier(tier: int) -> str:
   - id: l-call{t}
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{{ ... }}`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: {{ inside: {{ kind: condition_clause, stopBy: end }} }}
       all:
         - has: {{ field: function, pattern: $LFN }}
         - has:
@@ -858,6 +927,11 @@ def statement_tier(tier: int) -> str:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: {{ position: 1, reverse: true }}
               all:
                 - has:
                     field: declarator
@@ -878,6 +952,47 @@ def statement_tier(tier: int) -> str:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0{t}
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{{ ... }}`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: {{ inside: {{ kind: condition_clause, stopBy: end }} }}
+      all:
+        - has: {{ field: function, pattern: $LFN0 }}
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: {{ position: 1, reverse: true }}
+              has: {{ field: body, kind: compound_statement, pattern: $LB0 }}
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr{t}, l-arg{t}]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: {{ rewriters: {nxt}, source: $LB0 }}
+      LBODY0:
+        replace: {{ source: $LBRAW0, replace: '^\\s*\\{{\\s*|\\s*\\}}\\s*$', by: '' }}
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`

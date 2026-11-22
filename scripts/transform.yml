@@ -150,7 +150,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2, l-enum-value-2], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -172,6 +175,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-1
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -214,7 +254,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2, l-enum-value-2], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-1
     rule:
@@ -317,7 +360,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $DVR }
+        rewrite: { rewriters: [l-iife-1, l-call-1, l-call0-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1, l-enum-value-1], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -426,7 +469,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $EXR }
+        rewrite: { rewriters: [l-iife-1, l-call-1, l-call0-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1, l-enum-value-1], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -448,7 +491,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $RVR }
+        rewrite: { rewriters: [l-iife-1, l-call-1, l-call0-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1, l-enum-value-1], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -749,6 +792,12 @@ rewriters:
   - id: l-call-1
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -757,6 +806,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -777,6 +831,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-1
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-1, l-arg-1]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-2, s-iife-decl-2, s-struct-2, s-map-decl-2, s-assert-2, s-unreachable-2, s-decl-2, s-decl-bare-2, s-log-2, s-expr-2, s-return-2, s-return-void-2, s-next-2, s-break-2, s-if-else-2, s-if-2, s-while-2, s-foreach-2, s-for-2, s-switch-2, s-case-pair-2, s-case-absorbed-2, s-case-2, s-default-2, s-block-2, s-comment-2], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -829,7 +924,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $ICR }
+        rewrite: { rewriters: [l-iife-1, l-call-1, l-call0-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1, l-enum-value-1], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -865,7 +960,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $IC2R }
+        rewrite: { rewriters: [l-iife-1, l-call-1, l-call0-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1, l-enum-value-1], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -894,7 +989,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $WCR }
+        rewrite: { rewriters: [l-iife-1, l-call-1, l-call0-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1, l-enum-value-1], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -989,7 +1084,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1], source: $SWCR }
+        rewrite: { rewriters: [l-iife-1, l-call-1, l-call0-1, l-lambda-arg-1, l-lambda0-arg-1, l-lambda-1, l-lambda0-1, l-call-brace-1, l-new-1, l-new0-1, l-brace-init-1, l-addr-1, l-lcall-1, l-lbare-1, l-enum-1, l-enum-value-1], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -1242,7 +1337,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3, l-enum-value-3], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -1264,6 +1362,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-2
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -1306,7 +1441,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3, l-enum-value-3], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-2
     rule:
@@ -1409,7 +1547,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $DVR }
+        rewrite: { rewriters: [l-iife-2, l-call-2, l-call0-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2, l-enum-value-2], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -1518,7 +1656,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $EXR }
+        rewrite: { rewriters: [l-iife-2, l-call-2, l-call0-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2, l-enum-value-2], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -1540,7 +1678,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $RVR }
+        rewrite: { rewriters: [l-iife-2, l-call-2, l-call0-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2, l-enum-value-2], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -1841,6 +1979,12 @@ rewriters:
   - id: l-call-2
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -1849,6 +1993,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -1869,6 +2018,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-2
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-2, l-arg-2]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-3, s-iife-decl-3, s-struct-3, s-map-decl-3, s-assert-3, s-unreachable-3, s-decl-3, s-decl-bare-3, s-log-3, s-expr-3, s-return-3, s-return-void-3, s-next-3, s-break-3, s-if-else-3, s-if-3, s-while-3, s-foreach-3, s-for-3, s-switch-3, s-case-pair-3, s-case-absorbed-3, s-case-3, s-default-3, s-block-3, s-comment-3], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -1921,7 +2111,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $ICR }
+        rewrite: { rewriters: [l-iife-2, l-call-2, l-call0-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2, l-enum-value-2], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -1957,7 +2147,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $IC2R }
+        rewrite: { rewriters: [l-iife-2, l-call-2, l-call0-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2, l-enum-value-2], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -1986,7 +2176,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $WCR }
+        rewrite: { rewriters: [l-iife-2, l-call-2, l-call0-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2, l-enum-value-2], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -2081,7 +2271,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2], source: $SWCR }
+        rewrite: { rewriters: [l-iife-2, l-call-2, l-call0-2, l-lambda-arg-2, l-lambda0-arg-2, l-lambda-2, l-lambda0-2, l-call-brace-2, l-new-2, l-new0-2, l-brace-init-2, l-addr-2, l-lcall-2, l-lbare-2, l-enum-2, l-enum-value-2], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -2334,7 +2524,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4, l-enum-value-4], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -2356,6 +2549,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-3
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -2398,7 +2628,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4, l-enum-value-4], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-3
     rule:
@@ -2501,7 +2734,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $DVR }
+        rewrite: { rewriters: [l-iife-3, l-call-3, l-call0-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3, l-enum-value-3], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -2610,7 +2843,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $EXR }
+        rewrite: { rewriters: [l-iife-3, l-call-3, l-call0-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3, l-enum-value-3], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -2632,7 +2865,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $RVR }
+        rewrite: { rewriters: [l-iife-3, l-call-3, l-call0-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3, l-enum-value-3], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -2933,6 +3166,12 @@ rewriters:
   - id: l-call-3
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -2941,6 +3180,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -2961,6 +3205,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-3
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-3, l-arg-3]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-4, s-iife-decl-4, s-struct-4, s-map-decl-4, s-assert-4, s-unreachable-4, s-decl-4, s-decl-bare-4, s-log-4, s-expr-4, s-return-4, s-return-void-4, s-next-4, s-break-4, s-if-else-4, s-if-4, s-while-4, s-foreach-4, s-for-4, s-switch-4, s-case-pair-4, s-case-absorbed-4, s-case-4, s-default-4, s-block-4, s-comment-4], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -3013,7 +3298,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $ICR }
+        rewrite: { rewriters: [l-iife-3, l-call-3, l-call0-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3, l-enum-value-3], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -3049,7 +3334,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $IC2R }
+        rewrite: { rewriters: [l-iife-3, l-call-3, l-call0-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3, l-enum-value-3], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -3078,7 +3363,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $WCR }
+        rewrite: { rewriters: [l-iife-3, l-call-3, l-call0-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3, l-enum-value-3], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -3173,7 +3458,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3], source: $SWCR }
+        rewrite: { rewriters: [l-iife-3, l-call-3, l-call0-3, l-lambda-arg-3, l-lambda0-arg-3, l-lambda-3, l-lambda0-3, l-call-brace-3, l-new-3, l-new0-3, l-brace-init-3, l-addr-3, l-lcall-3, l-lbare-3, l-enum-3, l-enum-value-3], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -3426,7 +3711,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5, l-enum-value-5], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -3448,6 +3736,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-4
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -3490,7 +3815,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5, l-enum-value-5], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-4
     rule:
@@ -3593,7 +3921,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $DVR }
+        rewrite: { rewriters: [l-iife-4, l-call-4, l-call0-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4, l-enum-value-4], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -3702,7 +4030,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $EXR }
+        rewrite: { rewriters: [l-iife-4, l-call-4, l-call0-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4, l-enum-value-4], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -3724,7 +4052,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $RVR }
+        rewrite: { rewriters: [l-iife-4, l-call-4, l-call0-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4, l-enum-value-4], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -4025,6 +4353,12 @@ rewriters:
   - id: l-call-4
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -4033,6 +4367,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -4053,6 +4392,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-4
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-4, l-arg-4]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-5, s-iife-decl-5, s-struct-5, s-map-decl-5, s-assert-5, s-unreachable-5, s-decl-5, s-decl-bare-5, s-log-5, s-expr-5, s-return-5, s-return-void-5, s-next-5, s-break-5, s-if-else-5, s-if-5, s-while-5, s-foreach-5, s-for-5, s-switch-5, s-case-pair-5, s-case-absorbed-5, s-case-5, s-default-5, s-block-5, s-comment-5], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -4105,7 +4485,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $ICR }
+        rewrite: { rewriters: [l-iife-4, l-call-4, l-call0-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4, l-enum-value-4], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -4141,7 +4521,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $IC2R }
+        rewrite: { rewriters: [l-iife-4, l-call-4, l-call0-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4, l-enum-value-4], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -4170,7 +4550,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $WCR }
+        rewrite: { rewriters: [l-iife-4, l-call-4, l-call0-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4, l-enum-value-4], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -4265,7 +4645,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4], source: $SWCR }
+        rewrite: { rewriters: [l-iife-4, l-call-4, l-call0-4, l-lambda-arg-4, l-lambda0-arg-4, l-lambda-4, l-lambda0-4, l-call-brace-4, l-new-4, l-new0-4, l-brace-init-4, l-addr-4, l-lcall-4, l-lbare-4, l-enum-4, l-enum-value-4], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -4518,7 +4898,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6, l-enum-value-6], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -4540,6 +4923,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-5
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -4582,7 +5002,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6, l-enum-value-6], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-5
     rule:
@@ -4685,7 +5108,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $DVR }
+        rewrite: { rewriters: [l-iife-5, l-call-5, l-call0-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5, l-enum-value-5], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -4794,7 +5217,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $EXR }
+        rewrite: { rewriters: [l-iife-5, l-call-5, l-call0-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5, l-enum-value-5], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -4816,7 +5239,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $RVR }
+        rewrite: { rewriters: [l-iife-5, l-call-5, l-call0-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5, l-enum-value-5], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -5117,6 +5540,12 @@ rewriters:
   - id: l-call-5
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -5125,6 +5554,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -5145,6 +5579,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-5
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-5, l-arg-5]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-6, s-iife-decl-6, s-struct-6, s-map-decl-6, s-assert-6, s-unreachable-6, s-decl-6, s-decl-bare-6, s-log-6, s-expr-6, s-return-6, s-return-void-6, s-next-6, s-break-6, s-if-else-6, s-if-6, s-while-6, s-foreach-6, s-for-6, s-switch-6, s-case-pair-6, s-case-absorbed-6, s-case-6, s-default-6, s-block-6, s-comment-6], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -5197,7 +5672,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $ICR }
+        rewrite: { rewriters: [l-iife-5, l-call-5, l-call0-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5, l-enum-value-5], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -5233,7 +5708,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $IC2R }
+        rewrite: { rewriters: [l-iife-5, l-call-5, l-call0-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5, l-enum-value-5], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -5262,7 +5737,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $WCR }
+        rewrite: { rewriters: [l-iife-5, l-call-5, l-call0-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5, l-enum-value-5], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -5357,7 +5832,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5], source: $SWCR }
+        rewrite: { rewriters: [l-iife-5, l-call-5, l-call0-5, l-lambda-arg-5, l-lambda0-arg-5, l-lambda-5, l-lambda0-5, l-call-brace-5, l-new-5, l-new0-5, l-brace-init-5, l-addr-5, l-lcall-5, l-lbare-5, l-enum-5, l-enum-value-5], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -5610,7 +6085,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7, l-enum-value-7], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -5632,6 +6110,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-6
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -5674,7 +6189,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7, l-enum-value-7], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-6
     rule:
@@ -5777,7 +6295,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $DVR }
+        rewrite: { rewriters: [l-iife-6, l-call-6, l-call0-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6, l-enum-value-6], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -5886,7 +6404,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $EXR }
+        rewrite: { rewriters: [l-iife-6, l-call-6, l-call0-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6, l-enum-value-6], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -5908,7 +6426,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $RVR }
+        rewrite: { rewriters: [l-iife-6, l-call-6, l-call0-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6, l-enum-value-6], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -6209,6 +6727,12 @@ rewriters:
   - id: l-call-6
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -6217,6 +6741,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -6237,6 +6766,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-6
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-6, l-arg-6]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-7, s-iife-decl-7, s-struct-7, s-map-decl-7, s-assert-7, s-unreachable-7, s-decl-7, s-decl-bare-7, s-log-7, s-expr-7, s-return-7, s-return-void-7, s-next-7, s-break-7, s-if-else-7, s-if-7, s-while-7, s-foreach-7, s-for-7, s-switch-7, s-case-pair-7, s-case-absorbed-7, s-case-7, s-default-7, s-block-7, s-comment-7], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -6289,7 +6859,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $ICR }
+        rewrite: { rewriters: [l-iife-6, l-call-6, l-call0-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6, l-enum-value-6], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -6325,7 +6895,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $IC2R }
+        rewrite: { rewriters: [l-iife-6, l-call-6, l-call0-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6, l-enum-value-6], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -6354,7 +6924,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $WCR }
+        rewrite: { rewriters: [l-iife-6, l-call-6, l-call0-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6, l-enum-value-6], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -6449,7 +7019,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6], source: $SWCR }
+        rewrite: { rewriters: [l-iife-6, l-call-6, l-call0-6, l-lambda-arg-6, l-lambda0-arg-6, l-lambda-6, l-lambda0-6, l-call-brace-6, l-new-6, l-new0-6, l-brace-init-6, l-addr-6, l-lcall-6, l-lbare-6, l-enum-6, l-enum-value-6], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -6702,7 +7272,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8, l-enum-value-8], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -6724,6 +7297,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-7
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -6766,7 +7376,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8, l-enum-value-8], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-7
     rule:
@@ -6869,7 +7482,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $DVR }
+        rewrite: { rewriters: [l-iife-7, l-call-7, l-call0-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7, l-enum-value-7], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -6978,7 +7591,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $EXR }
+        rewrite: { rewriters: [l-iife-7, l-call-7, l-call0-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7, l-enum-value-7], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -7000,7 +7613,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $RVR }
+        rewrite: { rewriters: [l-iife-7, l-call-7, l-call0-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7, l-enum-value-7], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -7301,6 +7914,12 @@ rewriters:
   - id: l-call-7
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -7309,6 +7928,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -7329,6 +7953,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-7
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-7, l-arg-7]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-8, s-iife-decl-8, s-struct-8, s-map-decl-8, s-assert-8, s-unreachable-8, s-decl-8, s-decl-bare-8, s-log-8, s-expr-8, s-return-8, s-return-void-8, s-next-8, s-break-8, s-if-else-8, s-if-8, s-while-8, s-foreach-8, s-for-8, s-switch-8, s-case-pair-8, s-case-absorbed-8, s-case-8, s-default-8, s-block-8, s-comment-8], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -7381,7 +8046,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $ICR }
+        rewrite: { rewriters: [l-iife-7, l-call-7, l-call0-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7, l-enum-value-7], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -7417,7 +8082,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $IC2R }
+        rewrite: { rewriters: [l-iife-7, l-call-7, l-call0-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7, l-enum-value-7], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -7446,7 +8111,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $WCR }
+        rewrite: { rewriters: [l-iife-7, l-call-7, l-call0-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7, l-enum-value-7], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -7541,7 +8206,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7], source: $SWCR }
+        rewrite: { rewriters: [l-iife-7, l-call-7, l-call0-7, l-lambda-arg-7, l-lambda0-arg-7, l-lambda-7, l-lambda0-7, l-call-brace-7, l-new-7, l-new0-7, l-brace-init-7, l-addr-7, l-lcall-7, l-lbare-7, l-enum-7, l-enum-value-7], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -7794,7 +8459,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9, l-enum-value-9], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -7816,6 +8484,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-8
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -7858,7 +8563,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9, l-enum-value-9], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-8
     rule:
@@ -7961,7 +8669,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $DVR }
+        rewrite: { rewriters: [l-iife-8, l-call-8, l-call0-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8, l-enum-value-8], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -8070,7 +8778,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $EXR }
+        rewrite: { rewriters: [l-iife-8, l-call-8, l-call0-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8, l-enum-value-8], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -8092,7 +8800,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $RVR }
+        rewrite: { rewriters: [l-iife-8, l-call-8, l-call0-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8, l-enum-value-8], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -8393,6 +9101,12 @@ rewriters:
   - id: l-call-8
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -8401,6 +9115,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -8421,6 +9140,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-8
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-8, l-arg-8]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-9, s-iife-decl-9, s-struct-9, s-map-decl-9, s-assert-9, s-unreachable-9, s-decl-9, s-decl-bare-9, s-log-9, s-expr-9, s-return-9, s-return-void-9, s-next-9, s-break-9, s-if-else-9, s-if-9, s-while-9, s-foreach-9, s-for-9, s-switch-9, s-case-pair-9, s-case-absorbed-9, s-case-9, s-default-9, s-block-9, s-comment-9], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -8473,7 +9233,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $ICR }
+        rewrite: { rewriters: [l-iife-8, l-call-8, l-call0-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8, l-enum-value-8], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -8509,7 +9269,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $IC2R }
+        rewrite: { rewriters: [l-iife-8, l-call-8, l-call0-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8, l-enum-value-8], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -8538,7 +9298,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $WCR }
+        rewrite: { rewriters: [l-iife-8, l-call-8, l-call0-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8, l-enum-value-8], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -8633,7 +9393,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8], source: $SWCR }
+        rewrite: { rewriters: [l-iife-8, l-call-8, l-call0-8, l-lambda-arg-8, l-lambda0-arg-8, l-lambda-8, l-lambda0-8, l-call-brace-8, l-new-8, l-new0-8, l-brace-init-8, l-addr-8, l-lcall-8, l-lbare-8, l-enum-8, l-enum-value-8], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -8886,7 +9646,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10, l-enum-value-10], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -8908,6 +9671,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-9
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -8950,7 +9750,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10, l-enum-value-10], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-9
     rule:
@@ -9053,7 +9856,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $DVR }
+        rewrite: { rewriters: [l-iife-9, l-call-9, l-call0-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9, l-enum-value-9], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -9162,7 +9965,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $EXR }
+        rewrite: { rewriters: [l-iife-9, l-call-9, l-call0-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9, l-enum-value-9], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -9184,7 +9987,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $RVR }
+        rewrite: { rewriters: [l-iife-9, l-call-9, l-call0-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9, l-enum-value-9], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -9485,6 +10288,12 @@ rewriters:
   - id: l-call-9
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -9493,6 +10302,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -9513,6 +10327,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-9
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-9, l-arg-9]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-10, s-iife-decl-10, s-struct-10, s-map-decl-10, s-assert-10, s-unreachable-10, s-decl-10, s-decl-bare-10, s-log-10, s-expr-10, s-return-10, s-return-void-10, s-next-10, s-break-10, s-if-else-10, s-if-10, s-while-10, s-foreach-10, s-for-10, s-switch-10, s-case-pair-10, s-case-absorbed-10, s-case-10, s-default-10, s-block-10, s-comment-10], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -9565,7 +10420,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $ICR }
+        rewrite: { rewriters: [l-iife-9, l-call-9, l-call0-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9, l-enum-value-9], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -9601,7 +10456,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $IC2R }
+        rewrite: { rewriters: [l-iife-9, l-call-9, l-call0-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9, l-enum-value-9], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -9630,7 +10485,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $WCR }
+        rewrite: { rewriters: [l-iife-9, l-call-9, l-call0-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9, l-enum-value-9], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -9725,7 +10580,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9], source: $SWCR }
+        rewrite: { rewriters: [l-iife-9, l-call-9, l-call0-9, l-lambda-arg-9, l-lambda0-arg-9, l-lambda-9, l-lambda0-9, l-call-brace-9, l-new-9, l-new0-9, l-brace-init-9, l-addr-9, l-lcall-9, l-lbare-9, l-enum-9, l-enum-value-9], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -9978,7 +10833,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11, l-enum-value-11], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -10000,6 +10858,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-10
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -10042,7 +10937,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11, l-enum-value-11], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-10
     rule:
@@ -10145,7 +11043,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $DVR }
+        rewrite: { rewriters: [l-iife-10, l-call-10, l-call0-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10, l-enum-value-10], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -10254,7 +11152,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $EXR }
+        rewrite: { rewriters: [l-iife-10, l-call-10, l-call0-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10, l-enum-value-10], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -10276,7 +11174,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $RVR }
+        rewrite: { rewriters: [l-iife-10, l-call-10, l-call0-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10, l-enum-value-10], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -10577,6 +11475,12 @@ rewriters:
   - id: l-call-10
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -10585,6 +11489,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -10605,6 +11514,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-10
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-10, l-arg-10]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-iife-decl-args-11, s-iife-decl-11, s-struct-11, s-map-decl-11, s-assert-11, s-unreachable-11, s-decl-11, s-decl-bare-11, s-log-11, s-expr-11, s-return-11, s-return-void-11, s-next-11, s-break-11, s-if-else-11, s-if-11, s-while-11, s-foreach-11, s-for-11, s-switch-11, s-case-pair-11, s-case-absorbed-11, s-case-11, s-default-11, s-block-11, s-comment-11], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -10657,7 +11607,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $ICR }
+        rewrite: { rewriters: [l-iife-10, l-call-10, l-call0-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10, l-enum-value-10], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -10693,7 +11643,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $IC2R }
+        rewrite: { rewriters: [l-iife-10, l-call-10, l-call0-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10, l-enum-value-10], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -10722,7 +11672,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $WCR }
+        rewrite: { rewriters: [l-iife-10, l-call-10, l-call0-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10, l-enum-value-10], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -10817,7 +11767,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10], source: $SWCR }
+        rewrite: { rewriters: [l-iife-10, l-call-10, l-call0-10, l-lambda-arg-10, l-lambda0-arg-10, l-lambda-10, l-lambda0-10, l-call-brace-10, l-new-10, l-new0-10, l-brace-init-10, l-addr-10, l-lcall-10, l-lbare-10, l-enum-10, l-enum-value-10], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -11070,7 +12020,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12, l-enum-value-12], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -11092,6 +12045,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-11
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -11134,7 +12124,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12, l-enum-value-12], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-11
     rule:
@@ -11237,7 +12230,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $DVR }
+        rewrite: { rewriters: [l-iife-11, l-call-11, l-call0-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11, l-enum-value-11], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -11346,7 +12339,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $EXR }
+        rewrite: { rewriters: [l-iife-11, l-call-11, l-call0-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11, l-enum-value-11], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -11368,7 +12361,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $RVR }
+        rewrite: { rewriters: [l-iife-11, l-call-11, l-call0-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11, l-enum-value-11], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -11669,6 +12662,12 @@ rewriters:
   - id: l-call-11
     rule:
       kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
       all:
         - has: { field: function, pattern: $LFN }
         - has:
@@ -11677,6 +12676,11 @@ rewriters:
             pattern: $LAL
             has:
               kind: lambda_expression
+              # The LAST argument. A block binds to the call it follows, so a
+              # lambda anywhere else in the list cannot become one -- and
+              # passing a lambda as the final argument instead of writing a
+              # block is not how Ruby is written.
+              nthChild: { position: 1, reverse: true }
               all:
                 - has:
                     field: declarator
@@ -11697,6 +12701,47 @@ rewriters:
     fix: |-
       $LFN($LARGS) do |$LP|
       $LBODY
+      end
+  # The same, for a trailing lambda that declares no parameters. A Qt
+  # `connect` slot is the common case: the signal supplies the arguments, and
+  # the lambda itself takes none.
+  - id: l-call0-11
+    rule:
+      kind: call_expression
+      # Not inside a condition. `do ... end` binds to the OUTERMOST call, so a
+      # block written that way in an `if` condition closes the `if` itself and
+      # every statement after it falls outside the branch. l-call-brace handles
+      # that position with `{ ... }`, which binds to the call it follows, and
+      # is listed after these two so it picks up what they decline.
+      not: { inside: { kind: condition_clause, stopBy: end } }
+      all:
+        - has: { field: function, pattern: $LFN0 }
+        - has:
+            field: arguments
+            kind: argument_list
+            pattern: $LAL0
+            has:
+              kind: lambda_expression
+              nthChild: { position: 1, reverse: true }
+              has: { field: body, kind: compound_statement, pattern: $LB0 }
+              not:
+                has:
+                  field: declarator
+                  stopBy: end
+                  kind: parameter_declaration
+    transform:
+      LARGS0:
+        rewrite:
+          rewriters: [l-arg-addr-11, l-arg-11]
+          source: $LAL0
+          joinBy: ", "
+      LBRAW0:
+        rewrite: { rewriters: [s-struct-12, s-map-decl-12, s-assert-12, s-unreachable-12, s-decl-12, s-decl-bare-12, s-log-12, s-expr-12, s-return-12, s-return-void-12, s-next-12, s-break-12, s-comment-12], source: $LB0 }
+      LBODY0:
+        replace: { source: $LBRAW0, replace: '^\s*\{\s*|\s*\}\s*$', by: '' }
+    fix: |-
+      $LFN0($LARGS0) do
+      $LBODY0
       end
   # The same conversion with BRACES, for a block inside an `if`
   # condition. `do ... end` binds to the outermost call, so its `end`
@@ -11749,7 +12794,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC_NL:
-        rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $ICR }
+        rewrite: { rewriters: [l-iife-11, l-call-11, l-call0-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11, l-enum-value-11], source: $ICR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -11785,7 +12830,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       IC2_NL:
-        rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $IC2R }
+        rewrite: { rewriters: [l-iife-11, l-call-11, l-call0-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11, l-enum-value-11], source: $IC2R }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -11814,7 +12859,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       WC_NL:
-        rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $WCR }
+        rewrite: { rewriters: [l-iife-11, l-call-11, l-call0-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11, l-enum-value-11], source: $WCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -11909,7 +12954,7 @@ rewriters:
       # The condition is rewritten too. discovery.cpp's only lambda sits
       # inside an `if` condition, and a raw capture left C++ in the output.
       SWC_NL:
-        rewrite: { rewriters: [l-iife-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11], source: $SWCR }
+        rewrite: { rewriters: [l-iife-11, l-call-11, l-call0-11, l-lambda-arg-11, l-lambda0-arg-11, l-lambda-11, l-lambda0-11, l-call-brace-11, l-new-11, l-new0-11, l-brace-init-11, l-addr-11, l-lcall-11, l-lbare-11, l-enum-11, l-enum-value-11], source: $SWCR }
       # Only an OPERATOR continuation is pulled up. A wrapped C++ condition
       # keeps its newlines, and Ruby ends the statement at the last complete
       # expression, so a line starting `&& ...` parses as a new statement and
@@ -12162,7 +13207,10 @@ rewriters:
               all:
                 - has: { field: declarator, kind: identifier, pattern: $LNAME }
                 - has: { field: value, kind: lambda_expression }
-    fix: "$LNAME.call$LCARGS"
+    transform:
+      LCARGSR:
+        rewrite: { rewriters: [l-enum-12, l-enum-value-12], source: $LCARGS }
+    fix: "$LNAME.call$LCARGSR"
   # The same lambda mentioned with no arguments at all -- `post_process_server_new;`
   # as a statement of its own, which in C++ is a no-op expression but in the
   # source means the call. `not: inside init_declarator` keeps the rule off the
@@ -12184,6 +13232,43 @@ rewriters:
                 - has: { field: declarator, kind: identifier, pattern: $LBNAME }
                 - has: { field: value, kind: lambda_expression }
     fix: "$LBNAME.call"
+  # An UNQUALIFIED enum value becomes a symbol too: `NormalQuery` ->
+  # `:normal_query`, `ItemTypeFile` -> `:item_type_file`, in every position --
+  # assignment, comparison and call argument alike.
+  #
+  # The hard part is telling an enum value from a class name, since both are
+  # PascalCase and the enums themselves are declared in other headers this file
+  # never sees. The discriminator is file-local and structural: a class is used
+  # as a RECEIVER somewhere -- `Log::info`, `FileSystem::toPath`,
+  # `new ProcessDirectoryJob(...)` -- and an enum value never is.
+  #
+  # `$EV` appears both on the identifier being matched and inside the negative
+  # whole-file search, and ast-grep unifies them, so the test reads "this exact
+  # name is never a scope, a callee or a receiver anywhere in the translation
+  # unit". That replaced two text regexes which only caught `== X` and a
+  # trailing `= X`, and so missed every enum value passed as an argument.
+  - id: l-enum-value-12
+    rule:
+      kind: identifier
+      pattern: $EV
+      regex: '^[A-Z][a-z][A-Za-z0-9]*$'
+      not:
+        inside:
+          kind: translation_unit
+          stopBy: end
+          has:
+            stopBy: end
+            any:
+              - kind: qualified_identifier
+                has: { field: scope, pattern: $EV }
+              - kind: call_expression
+                has: { field: function, kind: identifier, pattern: $EV }
+              - kind: field_expression
+                has: { field: argument, kind: identifier, pattern: $EV }
+    transform:
+      EVSYM:
+        convert: { source: $EV, toCase: snakeCase }
+    fix: ":$EVSYM"
   # A qualified enum constant becomes a bare symbol of its last segment:
   # `SyncFileItem::Excluded` -> `:excluded`, `Vfs::Mode::Off` -> `:off`,
   # `Qt::CaseInsensitive` -> `:case_insensitive`.
@@ -12226,7 +13311,10 @@ rewriters:
       all:
         - has: { field: type, pattern: $NT }
         - has: { field: arguments, kind: argument_list, pattern: $NA }
-    fix: "$NT.new$NA"
+    transform:
+      NAR:
+        rewrite: { rewriters: [l-enum-12, l-enum-value-12], source: $NA }
+    fix: "$NT.new$NAR"
   # `new Foo` with no argument list.
   - id: l-new0-12
     rule:
@@ -12329,7 +13417,7 @@ rewriters:
       # The initialiser is rewritten too: `const bool isHidden = [&]{...}()`
       # keeps its lambda otherwise.
       DV_NL:
-        rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12], source: $DVR }
+        rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12, l-enum-value-12], source: $DVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -12438,7 +13526,7 @@ rewriters:
       # through with its lambda intact -- 8 of them in discovery.cpp, and their
       # bodies account for the last of the leftover C++ braces.
       EX_NL:
-        rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12], source: $EXR }
+        rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12, l-enum-value-12], source: $EXR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next
@@ -12460,7 +13548,7 @@ rewriters:
       # `return MovePermissionResult{a, b, c}` kept its C++ brace
       # initialisation otherwise.
       RV_NL:
-        rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12], source: $RVR }
+        rewrite: { rewriters: [l-iife-12, l-new-12, l-new0-12, l-brace-init-12, l-addr-12, l-lcall-12, l-lbare-12, l-enum-12, l-enum-value-12], source: $RVR }
       # A C++ line wrap inside the expression survives into the Ruby, where it
       # is a syntax error for an operator continuation and merely ugly for a
       # method one (`item.error_string = "..."` then `.arg(x)` on the next

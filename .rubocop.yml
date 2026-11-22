@@ -14,6 +14,8 @@ require:
   - ./cops/blank_line_between_statements.rb
   - ./cops/single_line_arguments.rb
   - ./cops/no_blank_line_before_branch.rb
+  - ./cops/disable_syntax_ternary_autocorrect.rb
+  - ./cops/constants_first.rb
 
 AllCops:
   TargetRubyVersion: 3.4
@@ -80,6 +82,16 @@ Layout/ClassStructure:
       - attr_accessor
     private_delegate:
       - delegate
+
+# OFF for this harness.
+#
+# The comment cops judge comments someone wrote -- unwrapped paragraphs, a
+# summary no longer than the code earns, annotations on a documented
+# interface. Every comment in the output is the C++ author's, carried across
+# verbatim by transform.yml's r-comment, so there is nothing here for the cop
+# to be right about and an autocorrect would rewrite the source's words.
+Nathank/CommentStructure:
+  Enabled: false
 
 # OFF for this harness.
 #
@@ -235,3 +247,11 @@ Transpile/NoBlankLineBeforeBranch:
     `else`, `elsif` or `end` that closes it. The EmptyLinesAround* family each
     handle one specific kind of body and none of them reaches the branches of
     an `if` or a `case`.
+
+
+Transpile/ConstantsFirst:
+  Enabled: true
+  Description: >-
+    Move a constant assignment above the first method in its class.
+    Layout/ClassStructure states the order and reports the violation but does
+    not correct this one, so the offence had nothing able to fix it.

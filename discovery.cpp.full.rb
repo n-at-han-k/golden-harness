@@ -32,6 +32,12 @@ require "qthreadpool"
 
 module OCC
   class ProcessDirectoryJob
+    Entries = Struct.new(
+      :db_entry,
+      :server_entry,
+      :local_entry,
+      keyword_init: true
+    )
     def start
       Log.info("sync.discovery") { "STARTING #{@current_folder.server} #{@query_server} #{@current_folder.local} #{@query_local}" }
 
@@ -64,12 +70,6 @@ module OCC
       end
     end
 
-    Entries = Struct.new(
-      :db_entry,
-      :server_entry,
-      :local_entry,
-      keyword_init: true
-    )
     def process
       unless @local_query_done && @server_query_done
         raise
@@ -130,7 +130,12 @@ module OCC
     end
 
     def handle_excluded(path, local_name, is_directory, is_hidden, is_symlink, is_vault_file)
-      excluded = @discovery_data.excludes.traversal_pattern_match(path, (is_directory ? ItemTypeDirectory : ItemTypeFile))
+      if is_directory
+        excluded = @discovery_data.excludes.traversal_pattern_match(path, (ItemTypeDirectory))
+      else
+        excluded = @discovery_data.excludes.traversal_pattern_match(path, (ItemTypeFile))
+      end
+
       is_invalid_pattern = false
 
       if (
@@ -160,7 +165,11 @@ module OCC
         is_invalid_pattern = true
       end
 
-      if (excluded == CSYNC_NOT_EXCLUDED && !is_symlink && !is_vault_file)
+      if (
+        excluded == CSYNC_NOT_EXCLUDED &&
+        !is_symlink &&
+        !is_vault_file
+      )
         return false
       elsif excluded == CSYNC_FILE_SILENTLY_EXCLUDED
         @discovery_data.silently_excluded(path)
@@ -201,9 +210,9 @@ module OCC
 
             unsupported_character.call(item.local_name)
 
-            if (!unsupported_character.is_null)
+            if !unsupported_character.is_null
               item.error_string = "File names containing the character '%1' are not supported on this file system.".arg(unsupported_character)
-            elsif (is_invalid_pattern)
+            elsif is_invalid_pattern
               item.error_string = "File name contains at least one invalid character"
             else
               item.error_string = "The file name is a reserved name on this file system."
@@ -252,17 +261,31 @@ module OCC
       end
 
       Log.info("sync.discovery") {
-        "Processing (db|local|remote)  #{path.original}" \
-          " | valid:  #{db_entry.is_valid} / #{has_local} / #{has_server}" \
-          " | mtime:  #{db_entry.modtime} / #{local_entry.modtime} / #{server_entry.modtime}" \
-          " | size:  #{db_entry.size} / #{local_entry.size} / #{server_entry.size}" \
-          " | etag:  #{db_entry.etag} // #{server_entry.etag}" \
-          " | checksum:  #{db_entry.checksum_header} // #{server_entry.checksum_header}" \
-          " | perm:  #{db_entry.remote_perm} // #{server_entry.remote_perm}" \
-          " | fileid:  #{db_entry.file_id} // #{server_entry.file_id}" \
-          " | inode:  #{db_entry.inode} / #{local_entry.inode} /" \
-          " | type:  #{db_entry.type} / #{local_entry.type} /" \
-          "#{server_entry.is_directory ? ItemTypeDirectory : ItemTypeFile}"
+        if server_entry.is_directory
+          "Processing (db|local|remote)  #{path.original}" \
+            " | valid:  #{db_entry.is_valid} / #{has_local} / #{has_server}" \
+            " | mtime:  #{db_entry.modtime} / #{local_entry.modtime} / #{server_entry.modtime}" \
+            " | size:  #{db_entry.size} / #{local_entry.size} / #{server_entry.size}" \
+            " | etag:  #{db_entry.etag} // #{server_entry.etag}" \
+            " | checksum:  #{db_entry.checksum_header} // #{server_entry.checksum_header}" \
+            " | perm:  #{db_entry.remote_perm} // #{server_entry.remote_perm}" \
+            " | fileid:  #{db_entry.file_id} // #{server_entry.file_id}" \
+            " | inode:  #{db_entry.inode} / #{local_entry.inode} /" \
+            " | type:  #{db_entry.type} / #{local_entry.type} /" \
+            "#{ItemTypeDirectory}"
+        else
+          "Processing (db|local|remote)  #{path.original}" \
+            " | valid:  #{db_entry.is_valid} / #{has_local} / #{has_server}" \
+            " | mtime:  #{db_entry.modtime} / #{local_entry.modtime} / #{server_entry.modtime}" \
+            " | size:  #{db_entry.size} / #{local_entry.size} / #{server_entry.size}" \
+            " | etag:  #{db_entry.etag} // #{server_entry.etag}" \
+            " | checksum:  #{db_entry.checksum_header} // #{server_entry.checksum_header}" \
+            " | perm:  #{db_entry.remote_perm} // #{server_entry.remote_perm}" \
+            " | fileid:  #{db_entry.file_id} // #{server_entry.file_id}" \
+            " | inode:  #{db_entry.inode} / #{local_entry.inode} /" \
+            " | type:  #{db_entry.type} / #{local_entry.type} /" \
+            "#{ItemTypeFile}"
+        end
       }
 
       if @discovery_data.is_renamed(path.original)
@@ -277,9 +300,9 @@ module OCC
       item.previous_size = db_entry.size
       item.previous_modtime = db_entry.modtime
 
-      if (item.type == :item_type_virtual_file_download)
+      if item.type == :item_type_virtual_file_download
         item.type = :item_type_virtual_file
-      elsif (item.type == :item_type_virtual_file_dehydration)
+      elsif item.type == :item_type_virtual_file_dehydration
         item.type = :item_type_file
       end
 
@@ -329,11 +352,13 @@ module OCC
       item.checksum_header = server_entry.checksum_header
       item.file_id = server_entry.file_id
       item.remote_perm = server_entry.remote_perm
+
       if server_entry.is_directory
         item.type = :item_type_directory
       else
         item.type = :item_type_file
       end
+
       item.etag = server_entry.etag
 
       if !server_entry.error.is_empty
@@ -347,7 +372,7 @@ module OCC
       end
 
       if db_entry.is_valid
-        if (server_entry.is_directory != db_entry.is_directory)
+        if server_entry.is_directory != db_entry.is_directory
           item.set_instruction(CSYNC_INSTRUCTION_TYPE_CHANGE)
           item.direction = :down
           item.modtime = server_entry.modtime
@@ -386,8 +411,10 @@ module OCC
             end
 
             item.set_instruction(CSYNC_INSTRUCTION_UPDATE_METADATA)
-
-          elsif (!local_entry.is_valid && @query_local != :parent_not_changed)
+          elsif (
+            !local_entry.is_valid &&
+            @query_local != :parent_not_changed
+          )
             item.set_instruction(CSYNC_INSTRUCTION_NEW)
           else
             item.set_instruction(CSYNC_INSTRUCTION_SYNC)
@@ -447,35 +474,38 @@ module OCC
       async = false
 
       rename_candidate_processing = lambda do |base|
-        if (done)
+        if done
           return
         end
 
-        if (!base.is_valid)
+        if !base.is_valid
           return
         end
 
-        if (base.type == :item_type_virtual_file_download)
+        if base.type == :item_type_virtual_file_download
           item.type = :item_type_virtual_file_download
           done = true
 
           return
         end
 
-        if (base.type == :item_type_virtual_file_dehydration)
+        if base.type == :item_type_virtual_file_dehydration
           done = true
 
           return
         end
 
-        if (base.is_directory != item.is_directory)
+        if base.is_directory != item.is_directory
           q_c_info(lc_disco, "file types different, not a rename")
           done = true
 
           return
         end
 
-        if (!server_entry.is_directory && base.etag != server_entry.etag)
+        if (
+          !server_entry.is_directory &&
+          base.etag != server_entry.etag
+        )
           q_c_info(lc_disco, "file etag different, not a rename")
           done = true
 
@@ -484,7 +514,7 @@ module OCC
 
         original_path = base.path
 
-        if (@discovery_data.is_renamed(original_path))
+        if @discovery_data.is_renamed(original_path)
           q_c_info(lc_disco, "folder already has a rename entry, skipping")
 
           return
@@ -492,10 +522,10 @@ module OCC
 
         original_path_adjusted = @discovery_data.adjust_renamed_path(original_path, :up)
 
-        if (!base.is_directory)
+        if !base.is_directory
           info = std::filesystem::directory_entry(FileSystem.to_filesystem_path(@discovery_data.local_dir + original_path_adjusted))
 
-          if (!info.exists)
+          if !info.exists
             Log.info("sync.discovery") { "Local file does not exist anymore. #{original_path_adjusted}" }
 
             return
@@ -510,15 +540,13 @@ module OCC
 
             return
           end
-        else
-          if (!QFileInfo(@discovery_data.local_dir + original_path_adjusted).is_dir)
-            Log.info("sync.discovery") { "Local directory does not exist anymore. #{original_path_adjusted}" }
+        elsif !QFileInfo(@discovery_data.local_dir + original_path_adjusted).is_dir
+          Log.info("sync.discovery") { "Local directory does not exist anymore. #{original_path_adjusted}" }
 
-            return
-          end
+          return
         end
 
-        if (base.is_virtual_file)
+        if base.is_virtual_file
           item.type = :item_type_virtual_file
         end
 
@@ -539,7 +567,7 @@ module OCC
           Log.info("sync.discovery") { "Rename detected (down)  #{item.local_name}  .  #{item.rename_target}" }
         end
 
-        if (was_deleted_on_server)
+        if was_deleted_on_server
           post_process_rename.call(path)
           done = true
         else
@@ -557,13 +585,19 @@ module OCC
               post_process_server_new.call
 
               return
-            elsif (job.http_status_code == 404)
+            elsif job.http_status_code == 404
               @discovery_data.find_and_cancel_deleted_job(original_path)
               post_process_rename.call(path)
 
-              process_file_finalize(
-                item, path, item.is_directory, (item.instruction == CSYNC_INSTRUCTION_RENAME ? NormalQuery : ParentDontExist), @query_server
-              )
+              if item.instruction == CSYNC_INSTRUCTION_RENAME
+                process_file_finalize(
+                  item, path, item.is_directory, (NormalQuery), @query_server
+                )
+              else
+                process_file_finalize(
+                  item, path, item.is_directory, (ParentDontExist), @query_server
+                )
+              end
 
               return
             end
@@ -611,14 +645,21 @@ module OCC
           item.instruction & (CSYNC_INSTRUCTION_NEW | CSYNC_INSTRUCTION_SYNC | CSYNC_INSTRUCTION_RENAME | CSYNC_INSTRUCTION_TYPE_CHANGE)
         )
 
-        has_local_virtual = local_entry.is_virtual_file || (@query_local == :parent_not_changed && db_entry.is_virtual_file)
+        has_local_virtual = (
+          local_entry.is_virtual_file ||
+          (@query_local == :parent_not_changed && db_entry.is_virtual_file)
+        )
 
         virtual_file_download = (
           item.type == :item_type_virtual_file_download ||
           item.instruction == CSYNC_INSTRUCTION_TYPE_CHANGE
         )
 
-        if (modified_on_server && !virtual_file_download && has_local_virtual)
+        if (
+          modified_on_server &&
+          !virtual_file_download &&
+          has_local_virtual
+        )
           item.set_instruction(CSYNC_INSTRUCTION_UPDATE_METADATA)
           modified_on_server = false
           item.type = :item_type_virtual_file
@@ -632,44 +673,54 @@ module OCC
       end
 
       server_modified.call
-
       @child_modified |= server_modified
 
       finalize = lambda do |path, recurse_query_server|
-        recurse = item.is_directory || local_entry.is_directory || server_entry.is_directory
+        recurse = (
+          item.is_directory ||
+          local_entry.is_directory ||
+          server_entry.is_directory
+        )
 
-        if (item.instruction == CSYNC_INSTRUCTION_CONFLICT && !item.is_directory)
+        if (
+          item.instruction == CSYNC_INSTRUCTION_CONFLICT &&
+          !item.is_directory
+        )
           recurse = false
         end
 
-        if (@query_local != :normal_query && @query_server != :normal_query)
+        if (
+          @query_local != :normal_query &&
+          @query_server != :normal_query
+        )
           recurse = false
         end
 
         if @query_local == :parent_not_changed
           recurse_query_local = :parent_not_changed
+        elsif (
+          local_entry.is_directory ||
+          item.instruction == CSYNC_INSTRUCTION_RENAME
+        )
+          recurse_query_local = :normal_query
         else
-          if local_entry.is_directory || item.instruction == CSYNC_INSTRUCTION_RENAME
-            recurse_query_local = :normal_query
-          else
-            recurse_query_local = :parent_dont_exist
-          end
+          recurse_query_local = :parent_dont_exist
         end
 
         process_file_finalize(item, path, recurse, recurse_query_local, recurse_query_server)
       end
 
       if !local_entry.is_valid
-        if (@query_local == :parent_not_changed && db_entry.is_valid)
-          if (no_server_entry)
+        if @query_local == :parent_not_changed && db_entry.is_valid
+          if no_server_entry
             item.set_instruction(CSYNC_INSTRUCTION_REMOVE)
             item.direction = :down
-          elsif (db_entry.type == :item_type_virtual_file_dehydration)
+          elsif db_entry.type == :item_type_virtual_file_dehydration
             item.direction = :down
             item.set_instruction(CSYNC_INSTRUCTION_SYNC)
             item.type = :item_type_virtual_file_dehydration
           end
-        elsif (no_server_entry)
+        elsif no_server_entry
           Log.info("sync.discovery") { "Stale DB entry" }
           @discovery_data.statedb.delete_file_record(path.original, true)
 
@@ -695,7 +746,7 @@ module OCC
       if db_entry.is_valid
         type_change = local_entry.is_directory != db_entry.is_directory
 
-        if (!type_change && local_entry.is_virtual_file)
+        if !type_change && local_entry.is_virtual_file
           if no_server_entry
             item.set_instruction(CSYNC_INSTRUCTION_REMOVE)
             item.direction = :down
@@ -713,7 +764,7 @@ module OCC
           )
         )
 
-          if (no_server_entry)
+          if no_server_entry
             item.set_instruction(CSYNC_INSTRUCTION_REMOVE)
             item.direction = :down
           elsif (
@@ -733,19 +784,21 @@ module OCC
             item.set_instruction(CSYNC_INSTRUCTION_UPDATE_METADATA)
             item.direction = :down
           end
-        elsif (server_modified)
+        elsif server_modified
           process_file_conflict(item, path, local_entry, server_entry, db_entry)
-        elsif (type_change)
+        elsif type_change
           item.set_instruction(CSYNC_INSTRUCTION_TYPE_CHANGE)
           item.direction = :up
           item.checksum_header.clear
           item.size = local_entry.size
           item.modtime = local_entry.modtime
+
           if local_entry.is_directory
             item.type = :item_type_directory
           else
             item.type = :item_type_file
           end
+
           @child_modified = true
         else
           item.set_instruction(CSYNC_INSTRUCTION_SYNC)
@@ -785,7 +838,7 @@ module OCC
         raise
       end
 
-      if (local_entry.is_virtual_file && !no_server_entry)
+      if local_entry.is_virtual_file && !no_server_entry
         unless item.instruction == CSYNC_INSTRUCTION_UPDATE_METADATA
           raise
         end
@@ -797,7 +850,7 @@ module OCC
         finalize.call(path, recurse_query_server)
 
         return
-      elsif (server_modified)
+      elsif server_modified
         process_file_conflict(item, path, local_entry, server_entry, db_entry)
         finalize.call(path, recurse_query_server)
 
@@ -812,21 +865,19 @@ module OCC
 
       if local_entry.is_directory
         item.type = :item_type_directory
+      elsif local_entry.is_virtual_file
+        item.type = :item_type_virtual_file
       else
-        if local_entry.is_virtual_file
-          item.type = :item_type_virtual_file
-        else
-          item.type = :item_type_file
-        end
+        item.type = :item_type_file
       end
 
       @child_modified = true
 
       post_process_local_new = lambda do |path|
-        if (local_entry.is_virtual_file)
+        if local_entry.is_virtual_file
           is_place_holder = @discovery_data.sync_options.vfs.is_dehydrated_placeholder(@discovery_data.local_dir + path.local)
 
-          if (is_place_holder)
+          if is_place_holder
             Log.warn("sync.discovery") { "Wiping virtual file without db entry for #{path.local}" }
             item.set_instruction(CSYNC_INSTRUCTION_REMOVE)
             item.direction = :down
@@ -848,13 +899,13 @@ module OCC
       original_path = base.path
 
       move_check = lambda do
-        if (!base.is_valid)
+        if !base.is_valid
           Log.info("sync.discovery") { "Not a move, no item in db with inode #{local_entry.inode}" }
 
           return false
         end
 
-        if (base.is_directory != item.is_directory)
+        if base.is_directory != item.is_directory
           Log.info("sync.discovery") { "Not a move, types don't match #{base.type} #{item.type} #{local_entry.type}" }
 
           return false
@@ -894,10 +945,10 @@ module OCC
           item.type == :item_type_file &&
           base.type == :item_type_file
         )
-          if (compute_local_checksum(base.checksum_header, @discovery_data.local_dir + path.original, item))
+          if compute_local_checksum(base.checksum_header, @discovery_data.local_dir + path.original, item)
             Log.info("sync.discovery") { "checking checksum of potential rename  #{path.original} #{item.checksum_header} #{base.checksum_header}" }
 
-            if (item.checksum_header != base.checksum_header)
+            if item.checksum_header != base.checksum_header
               Log.info("sync.discovery") { "Not a move, checksums differ" }
 
               return false
@@ -905,7 +956,7 @@ module OCC
           end
         end
 
-        if (@discovery_data.is_renamed(original_path))
+        if @discovery_data.is_renamed(original_path)
           Log.info("sync.discovery") { "Not a move, base path already renamed" }
 
           return false
@@ -928,10 +979,11 @@ module OCC
           "Move without permission to rename base file,  source: #{move_perms.source_ok} , target: #{move_perms.destination_ok}" \
             ", targetNew: #{move_perms.destination_new_ok}"
         }
+
         post_process_local_new.call(path)
         finalize.call(path, recurse_query_server)
 
-        if (move_perms.destination_new_ok)
+        if move_perms.destination_new_ok
           return
         end
 
@@ -969,9 +1021,9 @@ module OCC
         item.etag = base.etag
         item.type = base.type
 
-        if (item.type == :item_type_virtual_file_download)
+        if item.type == :item_type_virtual_file_download
           item.type = :item_type_virtual_file
-        elsif (item.type == :item_type_virtual_file_dehydration)
+        elsif item.type == :item_type_virtual_file_dehydration
           item.type = :item_type_file
         end
 
@@ -981,7 +1033,11 @@ module OCC
       end
 
       if was_deleted_on_client.first
-        finalize.call(process_rename.call(path), (was_deleted_on_client.second == base.etag ? ParentNotChanged : NormalQuery))
+        if was_deleted_on_client.second == base.etag
+          finalize.call(process_rename.call(path), (ParentNotChanged))
+        else
+          finalize.call(process_rename.call(path), (NormalQuery))
+        end
       else
         @pending_async_jobs += 1
         server_original_path = @discovery_data.remote_folder + @discovery_data.adjust_renamed_path(original_path, :down)
@@ -999,13 +1055,23 @@ module OCC
           else
             @discovery_data.find_and_cancel_deleted_job(original_path)
 
-            process_file_finalize(
-              item,
-              process_rename.call(path),
-              item.is_directory,
-              NormalQuery,
-              (job.etag == base.etag ? ParentNotChanged : NormalQuery)
-            )
+            if job.etag == base.etag
+              process_file_finalize(
+                item,
+                process_rename.call(path),
+                item.is_directory,
+                NormalQuery,
+                (ParentNotChanged)
+              )
+            else
+              process_file_finalize(
+                item,
+                process_rename.call(path),
+                item.is_directory,
+                NormalQuery,
+                (NormalQuery)
+              )
+            end
           end
 
           @pending_async_jobs -= 1
@@ -1026,7 +1092,7 @@ module OCC
         return
       end
 
-      if (db_entry.is_virtual_file || local_entry.is_virtual_file)
+      if db_entry.is_virtual_file || local_entry.is_virtual_file
         item.type = :item_type_virtual_file_download
       end
 
@@ -1058,9 +1124,15 @@ module OCC
 
       up = @discovery_data.statedb.get_upload_info(path.original)
 
-      if up.valid && up.content_checksum == server_entry.checksum_header
+      if (
+        up.valid &&
+        up.content_checksum == server_entry.checksum_header
+      )
         item.set_instruction((
-          if up.modtime == local_entry.modtime && up.size == local_entry.size
+          if (
+            up.modtime == local_entry.modtime &&
+            up.size == local_entry.size
+          )
             CSYNC_INSTRUCTION_UPDATE_METADATA
           else
             CSYNC_INSTRUCTION_SYNC
@@ -1104,7 +1176,10 @@ module OCC
         path.original != path.target &&
         item.instruction & (CSYNC_INSTRUCTION_UPDATE_METADATA | CSYNC_INSTRUCTION_NONE)
       )
-        unless @dir_item && @dir_item.instruction == CSYNC_INSTRUCTION_RENAME
+        unless (
+          @dir_item &&
+          @dir_item.instruction == CSYNC_INSTRUCTION_RENAME
+        )
           raise
         end
 
@@ -1115,14 +1190,17 @@ module OCC
 
       Log.info("sync.discovery") { "Discovered #{item.local_name} #{item.instruction} #{item.direction} #{item.type}" }
 
-      if (item.is_directory && item.instruction == CSYNC_INSTRUCTION_SYNC)
+      if (
+        item.is_directory &&
+        item.instruction == CSYNC_INSTRUCTION_SYNC
+      )
         item.set_instruction(CSYNC_INSTRUCTION_UPDATE_METADATA)
       end
 
       removed = item.instruction == CSYNC_INSTRUCTION_REMOVE
 
       if check_permissions(item)
-        if (item.is_restoration && item.is_directory)
+        if item.is_restoration && item.is_directory
           recurse = true
         else
           recurse = false
@@ -1183,7 +1261,10 @@ module OCC
 
       Log.info("sync.discovery") { "Discovered (blacklisted)  #{item.local_name} #{item.instruction} #{item.direction} #{item.is_directory}" }
 
-      if item.is_directory && item.instruction != CSYNC_INSTRUCTION_IGNORE
+      if (
+        item.is_directory &&
+        item.instruction != CSYNC_INSTRUCTION_IGNORE
+      )
         job = ProcessDirectoryJob.new(path, item, NormalQuery, InBlackList, this)
         connect(job, :finished, this, :sub_job_finished)
         @queued_jobs.push_back(job)
@@ -1202,12 +1283,10 @@ module OCC
         perms = (
           if !@root_permissions.is_null
             @root_permissions
+          elsif @dir_item
+            @dir_item.remote_perm
           else
-            if @dir_item
-              @dir_item.remote_perm
-            else
-              @root_permissions
-            end
+            @root_permissions
           end
         )
 
@@ -1222,7 +1301,7 @@ module OCC
           item.error_string = "Not allowed because you don't have permission to add subfolders to that folder"
 
           return false
-        elsif (!item.is_directory && !perms.has_permission(:can_add_file))
+        elsif !item.is_directory && !perms.has_permission(:can_add_file)
           Log.warn("sync.discovery") { "checkForPermission: ERROR #{item.local_name} #{perms}" }
           item.set_instruction(CSYNC_INSTRUCTION_ERROR)
           item.error_string = "Not allowed because you don't have permission to add files in that folder"
@@ -1296,19 +1375,25 @@ module OCC
       else
         dest_perms = @root_permissions
       end
+
       file_perms = src_perm
-      is_rename = src_path.starts_with(@current_folder.original) && src_path.last_index_of("/") == @current_folder.original.size
+
+      is_rename = (
+        src_path.starts_with(@current_folder.original) &&
+        src_path.last_index_of("/") == @current_folder.original.size
+      )
+
       destination_ok = true
       destination_new_ok = true
 
-      if (dest_perms.is_null)
+      if dest_perms.is_null
         nil
       elsif (
         is_directory &&
         !dest_perms.has_permission(:can_add_sub_directories)
       )
         destination_new_ok = false
-      elsif (!is_directory && !dest_perms.has_permission(:can_add_file))
+      elsif !is_directory && !dest_perms.has_permission(:can_add_file)
         destination_new_ok = false
       end
 
@@ -1347,7 +1432,7 @@ module OCC
       @child_ignored |= job.child_ignored
       @child_modified |= job.child_modified
 
-      if (job.dir_item)
+      if job.dir_item
         @discovery_data.item_discovered(job.dir_item)
       end
 
@@ -1362,11 +1447,18 @@ module OCC
     end
 
     def process_sub_jobs(nb_jobs)
-      if @queued_jobs.empty && @running_jobs.empty && @pending_async_jobs == 0
+      if (
+        @queued_jobs.empty &&
+        @running_jobs.empty &&
+        @pending_async_jobs == 0
+      )
         @pending_async_jobs = -1
 
         if @dir_item
-          if @child_modified && @dir_item.instruction == CSYNC_INSTRUCTION_REMOVE
+          if (
+            @child_modified &&
+            @dir_item.instruction == CSYNC_INSTRUCTION_REMOVE
+          )
             @dir_item.set_instruction(CSYNC_INSTRUCTION_NEW)
 
             if @dir_item.direction == :up
@@ -1389,7 +1481,10 @@ module OCC
             end
           end
 
-          if @child_ignored && @dir_item.instruction == CSYNC_INSTRUCTION_REMOVE
+          if (
+            @child_ignored &&
+            @dir_item.instruction == CSYNC_INSTRUCTION_REMOVE
+          )
             @dir_item.set_instruction(CSYNC_INSTRUCTION_NONE)
           end
         end
@@ -1402,7 +1497,7 @@ module OCC
       @running_jobs.each do |rj|
         started += rj.process_sub_jobs(nb_jobs - started)
 
-        if (started >= nb_jobs)
+        if started >= nb_jobs
           return started
         end
       end
@@ -1452,14 +1547,14 @@ module OCC
             code = results.error.code
             Log.warn("sync.discovery") { "Server error in directory #{@current_folder.server} #{code}" }
 
-            if (server_job.is_root_path)
-              if (code == 404)
+            if server_job.is_root_path
+              if code == 404
                 @discovery_data.fatal_error("This Space is currently unavailable")
 
                 return
               end
             else
-              if (code >= 403)
+              if code >= 403
                 @dir_item.set_instruction(CSYNC_INSTRUCTION_IGNORE)
                 @dir_item.error_string = results.error.message
                 this.finished
@@ -1467,12 +1562,21 @@ module OCC
                 return
               end
 
-              @discovery_data.fatal_error(
-                tr("Server replied with an error while reading directory »%1«: %2") % {
-                  dir: @current_folder.server.is_empty ? "/" : @current_folder.server,
-                  msg: results.error.message
-                }
-              )
+              if @current_folder.server.is_empty
+                @discovery_data.fatal_error(
+                                tr("Server replied with an error while reading directory »%1«: %2") % {
+                                  dir: "/",
+                                  msg: results.error.message
+                                }
+                              )
+              else
+                @discovery_data.fatal_error(
+                                tr("Server replied with an error while reading directory »%1«: %2") % {
+                                  dir: @current_folder.server,
+                                  msg: results.error.message
+                                }
+                              )
+              end
             end
           end
         end
@@ -1533,7 +1637,7 @@ module OCC
         @local_normal_query_entries = results
         @local_query_done = true
 
-        if (@server_query_done)
+        if @server_query_done
           this.process
         end
       end
