@@ -73,6 +73,16 @@
     };
     version = "0.30.0";
   };
+  diff-lcs = {
+    groups = ["default"];
+    platforms = [];
+    source = {
+      remotes = ["https://rubygems.org"];
+      sha256 = "1mb3nfmnv5gyaxcw10fzdr4jrvx198bq38akiw7vai99xi95v2kh";
+      type = "gem";
+    };
+    version = "2.0.0";
+  };
   ffi = {
     groups = ["default"];
     platforms = [];
@@ -376,6 +386,17 @@
       type = "gem";
     };
     version = "4.3.0";
+  };
+  unparser = {
+    dependencies = ["diff-lcs" "parser" "prism"];
+    groups = ["default"];
+    platforms = [];
+    source = {
+      remotes = ["https://rubygems.org"];
+      sha256 = "0rv0lw5h5p27i7nzkq0yf54i9vcl6zd4fgdia29bc8rslxsg2ca3";
+      type = "gem";
+    };
+    version = "0.9.0";
   };
   version_gem = {
     groups = ["default"];
