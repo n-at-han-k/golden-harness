@@ -260,12 +260,32 @@ rule:
     - has:
         field: function
         kind: identifier
-        regex: '^(OC_ENSURE|OC_ENSURE_NOT)$'
+        regex: '^OC_ENSURE$'
     - has: { field: arguments, kind: argument_list, pattern: $EA }
 transform:
   INNER:
     replace: { source: $EA, replace: '^\(|\)$', by: '' }
 fix: "$INNER"
+---
+# `OC_ENSURE_NOT(x)` ensures NOT x, so the negation is part of what the macro
+# MEANS and has to survive it. Stripping it to `x` like OC_ENSURE above turned
+# `if (OC_ENSURE_NOT(_engine.isNull()))` into `if (_engine.isNull())` -- the
+# opposite branch, silently.
+id: s-oc-ensure-not
+language: cpp
+severity: hint
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: identifier
+        regex: '^OC_ENSURE_NOT$'
+    - has: { field: arguments, kind: argument_list, pattern: $NEA }
+transform:
+  NINNER:
+    replace: { source: $NEA, replace: '^\(|\)$', by: '' }
+fix: "!($NINNER)"
 ---
 # NOTE: the struct -> Struct.new and std::map -> Hash.new idioms used to live
 # here. They emit RUBY, which stops the file parsing as C++ and made

@@ -40,6 +40,12 @@ module RuboCop
         ASSIGNMENTS = %i[lvasgn ivasgn cvasgn gvasgn casgn op_asgn or_asgn and_asgn
                          masgn indexasgn].freeze
 
+        CONTROL_FLOW = %i[while until for case_match].freeze
+
+        # What a block can evaluate TO. A literal is a value; so is an `if`
+        # whose every branch is one.
+        LITERALS = %i[str dstr sym int float true false nil].freeze
+
         def on_block(node)
           return unless node.multiline?
           return unless node.braces?
@@ -74,9 +80,38 @@ module RuboCop
             body = node.body
             return false if body.nil? || body.begin_type?
             return false if ASSIGNMENTS.include?(body.type)
+          return false if CONTROL_FLOW.include?(body.type)
+          # A lone `if` is one node, but whether it is a VALUE depends on its
+          # branches. The golden writes
+          #
+          #   Log.info("sync.discovery") {        connect(..., context) do
+          #     if server_entry.is_directory        if ...capabilities...
+          #       "Processing ..."                    fetch_private_link_url(...)
+          #     else                               else
+          #       "Processing ..."                   context.delete_later
+          #     end                                end
+          #   }                                   end
+          #
+          # with braces on the left and `do ... end` on the right. Both bodies
+          # are a single `if`; what differs is that one evaluates to a string
+          # and the other runs statements.
+          return false if branching?(body) && !value_branches?(body)
             return false if body.send_type? && body.assignment_method?
 
             true
+          end
+
+          def branching?(node) = %i[if case].include?(node.type)
+
+          # Every branch of the `if`/`case` evaluates to a literal.
+          def value_branches?(node)
+            branches = node.type == :if ? node.children[1..] : node.children[1..]
+            branches.compact.all? do |branch|
+              next value_branches?(branch) if branching?(branch)
+              next branch.children.last && LITERALS.include?(branch.children.last.type) if branch.type == :when
+
+              LITERALS.include?(branch.type)
+            end
           end
 
           # A block sitting in an `if`/`while`/`until` condition keeps its

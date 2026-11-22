@@ -15,6 +15,7 @@ require:
   - ./cops/single_line_arguments.rb
   - ./cops/single_line_block.rb
   - ./cops/multiline_string.rb
+  - ./cops/macro_parentheses.rb
   - ./cops/block_delimiters.rb
   - ./cops/no_blank_line_before_branch.rb
   - ./cops/disable_syntax_ternary_autocorrect.rb
@@ -249,6 +250,13 @@ Transpile/SingleLineBlock:
   Description: >-
     Join a value-producing block onto one line. Unparser lays every block out
     across lines; the golden keeps a log-message block inline.
+
+Transpile/MacroParentheses:
+  Enabled: true
+  Description: >-
+    Drop the parentheses from an include/extend/require call. Unparser
+    parenthesises every call with an argument; these read as declarations, and
+    ClassStructure treats module_inclusion as its own category.
 
 Transpile/MultilineString:
   Enabled: true

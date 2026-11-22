@@ -94,6 +94,7 @@ module GoldenHarness
         when "compound_statement" then statements_of(node)
         when "declaration" then declaration(node)
         when "struct_specifier", "class_specifier" then hoist(node)
+        when "attributed_statement" then attributed(node)
         when "expression_statement" then expression_statement(node)
         when "return_statement" then [return_statement(node)]
         when "continue_statement" then [Next_()]
@@ -106,6 +107,24 @@ module GoldenHarness
         when "switch_statement" then [switch(node)]
         when "labeled_statement" then statements_of(node)
         else [expr(node)].compact
+        end
+      end
+
+      # `[[fallthrough]];` carries nothing into Ruby -- a `when` that falls
+      # through is written as one `when` with several values, which `switch`
+      # below does by treating the label's body as empty. Any other attributed
+      # statement contributes its statement.
+      def attributed(node)
+        return [] if fallthrough?(node)
+
+        @cst.named(node).reject { _1.kind == "attribute_declaration" }.flat_map { stmt(_1) }
+      end
+
+      def fallthrough?(node)
+        return false unless node.kind == "attributed_statement"
+
+        @cst.descendants(node).any? do |inner|
+          inner.kind == "identifier" && @cst.text(inner) == "fallthrough"
         end
       end
 
@@ -154,7 +173,7 @@ module GoldenHarness
         # `SqlQuery query(db);` -- a constructor, which the C++ spells like a
         # declaration with an argument list rather than with an `=`.
         arguments = @cst.child(init, "argument_list")
-        if arguments
+        if arguments && type && !@facts.enum_type?(@cst.text(type))
           values = @cst.named(arguments).filter_map { expr(_1) }
           # `QByteArray sql("SELECT ...")` -- a Qt string built from a literal
           # is just the literal; there is no Qt string type in Ruby. Same
@@ -170,6 +189,25 @@ module GoldenHarness
 
       def declaration_type(node) = @cst.field(node, :type)
 
+      def constructible?(type)
+        return false unless type.kind == "type_identifier"
+        return false unless @cst.text(type).match?(/\A[A-Z]/)
+
+        !@facts.enum_type?(@cst.text(type))
+      end
+
+      # The single value such a declaration is initialised with.
+      def scalar_declaration(node)
+        declarator = @cst.child(node, "function_declarator", field: :declarator)
+        return nil if declarator.nil?
+
+        name = @cst.dig(declarator, "identifier", field: :declarator)
+        values = @cst.named(@cst.field(declarator, :parameters))
+        return nil if name.nil? || values.size != 1
+
+        [Local(local_name(@cst.text(name)), fragment(@cst.text(values.first)))]
+      end
+
       # C++'s most vexing parse. `SqlQuery pragma1(_db);` is a CONSTRUCTOR, but
       # it is spelled exactly like a function declaration and tree-sitter reads
       # it as one: a function_declarator whose `parameter_list` holds `_db` as
@@ -179,7 +217,12 @@ module GoldenHarness
       # function returning a Qt class inside a method body -- so the parameters
       # are read back as the arguments they are.
       def vexing_parse(node, type)
-        return nil unless type && type.kind == "type_identifier" && @cst.text(type).match?(/\A[A-Z]/)
+        return nil if type.nil?
+        # `bool re(_definition.ignoreHiddenFiles);` and `LogStatus
+        # status(LogStatusRename);` have a constructor's shape over a type that
+        # constructs nothing -- a primitive, or an enum. The declaration is
+        # just its value.
+        return scalar_declaration(node) unless constructible?(type)
 
         declarator = @cst.child(node, "function_declarator", field: :declarator)
         return nil if declarator.nil?
@@ -253,6 +296,7 @@ module GoldenHarness
         type = @cst.field(node, :type)
         return Nil_() unless type && type.kind == "type_identifier"
         return Nil_() unless @cst.text(type).match?(/\A[A-Z]/)
+        return Nil_() if @facts.enum_type?(@cst.text(type))
 
         Call(ConstPath(@cst.text(type)), :new)
       end
@@ -349,6 +393,21 @@ module GoldenHarness
       end
 
       def if_statement(node)
+        # `if (const auto r = f(x); r.isValid())` -- C++17's if-with-initialiser.
+        # The declaration is hoisted above the `if`, which is where the golden
+        # puts it; Ruby has no form that scopes it to the branch.
+        #
+        # 03_simplify.yml's s-if-init-hoist aims at this but looks for the
+        # declaration under the clause's `value` field, and it is under an
+        # `init_statement` instead, so it never fired.
+        clause = @cst.field(node, :condition)
+        init = clause && @cst.child(clause, "init_statement")
+        prefix = init ? @cst.named(init).flat_map { stmt(_1) }.compact : []
+
+        prefix + [if_statement_body(node)]
+      end
+
+      def if_statement_body(node)
         alternative = @cst.field(node, :alternative)
         else_body =
           if alternative
@@ -360,7 +419,8 @@ module GoldenHarness
 
       def condition(node)
         clause = @cst.field(node, :condition)
-        inner = @cst.named(clause).first
+        # Past an init_statement, which if_statement has already hoisted out.
+        inner = @cst.named(clause).reject { _1.kind == "init_statement" }.first
         inner ? expr(inner) : Nil_()
       end
 
@@ -402,6 +462,11 @@ module GoldenHarness
         [@cst.text(name), expr(@cst.field(condition, :right))]
       end
 
+      # A block's statements, ignoring those that carry no meaning in Ruby.
+      def effective(body)
+        @cst.named(body).reject { fallthrough?(_1) }
+      end
+
       # A C++ `switch` is a Ruby `case`. 03_simplify.yml has already braced
       # every body and dropped the trailing `break`, so each label has exactly
       # one block under it.
@@ -417,8 +482,9 @@ module GoldenHarness
           value = @cst.field(label, :value)
           body = @cst.child(label, "compound_statement")
           # An empty label shares the next one's body: in C++ it falls through,
-          # so the faithful Ruby is one `when` with both values.
-          if body.nil? || @cst.named(body).empty?
+          # so the faithful Ruby is one `when` with both values. A label whose
+          # body is nothing but `[[fallthrough]];` says the same thing out loud.
+          if body.nil? || effective(body).empty?
             pending << expr(value) if value
             next
           end
@@ -426,10 +492,22 @@ module GoldenHarness
           if value
             whens << When(pending + [expr(value)], Body(statements_of(body)))
           else
+            # `default:` closes the run rather than absorbing it. The values
+            # that fell through this far behave exactly as the default does,
+            # but Ruby needs at least one `when`, and the golden gives them one
+            # with an empty body:
+            #
+            #   when :success, :restoration, :conflict
+            #     nil
+            #   else
+            whens << When(pending, Nil_()) if pending.any?
             else_body = Body(statements_of(body))
           end
           pending = []
         end
+
+        # A run still open at the end of the switch is its own `when` too.
+        whens << When(pending, Nil_()) if pending.any?
 
         Case(subject, whens, else_body)
       end

@@ -78,6 +78,10 @@ module GoldenHarness
     # constructor and becomes `Foo.new(args)`.
     def record?(name) = records.include?(name)
 
+    # An enum's own type name. `LogStatus status(LogStatusRename)` has a
+    # constructor's shape and constructs nothing.
+    def enum_type?(name) = enum_types.include?(name)
+
     # A name declared as a local in this function rather than a member of the
     # class, which is what decides whether a leading `_` becomes an `@`.
     def local?(scope, name) = scope && locals.include?("#{scope}::#{name}")
@@ -103,6 +107,8 @@ module GoldenHarness
       def internal = @internal ||= Set.new(@oracle.fetch("internal", []))
 
       def locals = @locals ||= Set.new(@oracle.fetch("locals", []))
+
+      def enum_types = @enum_types ||= Set.new(@oracle.fetch("enum_types", []))
 
       def scan
         @cst.each_node(@cst.root) do |node|

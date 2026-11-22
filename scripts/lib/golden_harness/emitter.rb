@@ -76,6 +76,18 @@ module GoldenHarness
         @cst.text(first).gsub(COMMENT_LEADER, "# ").split("\n").map(&:rstrip)
       end
 
+      # `using namespace FileSystem::SizeLiterals;` written INSIDE the
+      # namespace, which belongs to the module rather than to the file.
+      def usings_in(body)
+        @cst.named(body).filter_map do |node|
+          next unless node.kind == "using_declaration"
+          next unless @cst.text(node).include?("namespace")
+
+          name = @cst.text(node)[/namespace\s+([\w:]+)/, 1]
+          name && Call(nil, :include, ConstPath(name))
+        end
+      end
+
       # One line per include, with a blank line wherever the C++ had one, so
       # the author's grouping survives.
       def requires
@@ -133,6 +145,7 @@ module GoldenHarness
 
       def top_level(node)
         case node.kind
+        when "declaration" then namespace_constant(node)
         when "namespace_definition" then namespace(node)
         when "struct_specifier", "class_specifier" then [struct(node)]
         when "enum_specifier" then [enum(node)]
@@ -160,23 +173,92 @@ module GoldenHarness
         # private method, so they are held back and emitted under `private` at
         # the end of the class rather than wrapped in a module of their own.
         unless named
-          @private_members.concat(@cst.named(body).flat_map { top_level(_1) }.compact)
+          internal = @cst.named(body).flat_map { top_level(_1) }.compact
+          # A constant among them belongs to the class: Ruby cannot assign one
+          # inside a method, so it cannot live in the `private` section.
+          constants, methods = internal.partition { _1.type == :casgn }
+          @hoisted.concat(constants)
+          @private_members.concat(methods)
           return []
         end
 
-        members = @hoisted + @cst.named(body).flat_map { top_level(_1) }.compact
-        @hoisted = []
-        members += [Call(nil, :private), *@private_members] if @private_members.any?
-        @private_members = []
-        [Module_(@cst.text(named), inner ? Class_(inner, Body(members)) : Body(members))]
+        [Module_(@cst.text(named), Body(usings_in(body) + class_blocks(body)))]
       end
 
-      def class_name(body)
-        found = @cst.descendants(body).find { _1.kind == "qualified_identifier" }
-        return nil if found.nil?
+      # One `class` block per RUN of definitions sharing a scope, in source
+      # order.
+      #
+      # owncloudpropagator.cpp defines methods of seven classes, interleaved --
+      # `OwncloudPropagator`, then `PropagateItemJob`, then `OwncloudPropagator`
+      # again -- and the golden reopens each as the source moves between them.
+      # Assuming one class per namespace put all 57 methods into the first and
+      # lost every constructor and destructor except that class's own.
+      def class_blocks(body)
+        blocks = []
+        scope = :none
+        current = []
 
-        scope = @cst.field(found, :scope)
-        scope && @cst.text(scope)
+        @cst.named(body).each do |child|
+          if child.kind == "function_definition"
+            # A free function at namespace scope keeps the scope it is written
+            # among, which is where the golden puts such a helper.
+            at = definition_scope(child) || (scope == :none ? nil : scope)
+            if at != scope
+              blocks << [scope, current] unless current.empty?
+              scope = at
+              current = []
+            end
+            @class_name = at
+            current.concat(function(child))
+          else
+            current.concat(top_level(child))
+          end
+        end
+        blocks << [scope, current] unless current.empty?
+
+        assemble(blocks)
+      end
+
+      # The hoisted constants open the first block; the private section closes
+      # the last one.
+      def assemble(blocks)
+        return [] if blocks.empty?
+
+        blocks.first[1] = @hoisted + blocks.first[1]
+        @hoisted = []
+        if @private_members.any?
+          blocks.last[1] += [Call(nil, :private), *@private_members]
+          @private_members = []
+        end
+
+        blocks.map do |(scope, members)|
+          scope && scope != :none ? Class_(scope, Body(members)) : Body(members)
+        end
+      end
+
+      def definition_scope(node)
+        declarator = @cst.dig(node, "function_declarator", field: :declarator)
+        qualified = declarator && @cst.dig(declarator, "qualified_identifier", field: :declarator)
+        scope = qualified && @cst.field(qualified, :scope)
+        scope ? @cst.text(scope) : nil
+      end
+
+      # The class these definitions belong to.
+      #
+      # Taken from a qualified name that is a FUNCTION DEFINITION's declarator,
+      # not from the first qualified name anywhere in the namespace: folder.cpp
+      # opens with `using namespace FileSystem::SizeLiterals;`, and reading that
+      # one gave `class FileSystem` and lost the constructor with it.
+      def class_name(body)
+        @cst.descendants(body).each do |node|
+          next unless node.kind == "function_definition"
+
+          declarator = @cst.dig(node, "function_declarator", field: :declarator)
+          qualified = declarator && @cst.dig(declarator, "qualified_identifier", field: :declarator)
+          scope = qualified && @cst.field(qualified, :scope)
+          return @cst.text(scope) if scope
+        end
+        nil
       end
 
       # A definition, in source position.
@@ -335,6 +417,7 @@ module GoldenHarness
         # A mention inside `Q_UNUSED(x)` does not count -- that call is the C++
         # saying the parameter is unused, and the emitter drops it.
         @cst.descendants(definition).none? do |node|
+          next interpolates?(node, name) if STRING_KINDS.include?(node.kind)
           next false unless %w[identifier field_identifier].include?(node.kind)
           next false unless @cst.text(node) == name
           # Its own declaration is not a use.
@@ -342,6 +425,21 @@ module GoldenHarness
 
           !unused_marker?(node)
         end
+      end
+
+      STRING_KINDS = %w[string_literal raw_string_literal concatenated_string].freeze
+
+      # A use that 04_interp.yml has already folded into a string.
+      #
+      # `tr("»%1« renamed to »%2«").arg(file, renameTarget)` becomes a literal
+      # carrying `#{file}` and `#{rename_target}`, so by the time the emitter
+      # sees the body the parameter appears only as text inside it. Scanning
+      # for identifiers alone called it unused, renamed it to `_rename_target`,
+      # and left the interpolation referring to a name that no longer existed
+      # -- which unparser then refused to round trip.
+      def interpolates?(node, name)
+        text = @cst.text(node)
+        text.scan(/\#\{([^}]*)\}/).any? { |(inner)| inner.match?(/\b#{Regexp.escape(name)}\b/) }
       end
 
       def unused_marker?(node)
@@ -380,6 +478,17 @@ module GoldenHarness
 
       # Trailing keyword arguments are `kwargs`, not a `hash`: as a hash
       # unparser writes the braces, giving `Struct.new(:a, { keyword_init: true })`.
+      # `constexpr int retrySyncLimitC = 3;` at namespace scope -> a constant on
+      # the class, named the way Ruby names one.
+      def namespace_constant(node)
+        init = @cst.child(node, "init_declarator", field: :declarator)
+        name = init && @cst.dig(init, "identifier")
+        value = init && @cst.field(init, :value)
+        return [] if name.nil? || value.nil?
+
+        [Constant(snake(@cst.text(name)).upcase, expr(value))]
+      end
+
       def kwarg(key, value) = n(:kwargs, n(:pair, Sym(key), value))
 
       # ast-grep's snakeCase: a break before every capital, then downcase.

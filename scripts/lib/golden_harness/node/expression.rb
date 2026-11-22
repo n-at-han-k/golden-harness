@@ -70,7 +70,11 @@ module GoldenHarness
         when "null", "nullptr" then Nil_()
         # The golden writes `this`, not `self`: a Qt parent/receiver argument
         # is carried across as the C++ spells it.
-        when "this" then Lvar(:this)
+        #
+        # A receiverless SEND, not an lvar. It prints as bare `this` either
+        # way, but `this` is not a local -- so as an lvar inside a log message
+        # unparser cannot round trip the string and refuses the whole file.
+        when "this" then Call(nil, :this)
         when "lambda_expression" then lambda_node(node)
         when "new_expression" then new_object(node)
         when "compound_literal_expression" then brace_init(node)
@@ -136,7 +140,10 @@ module GoldenHarness
         # A scoped enum constant, whatever its case: the oracle knows
         # `CheckSums::Algorithm::PARSE_ERROR` is one, and being scoped is what
         # separates it from a bare `CSYNC_INSTRUCTION_NEW` macro constant.
-        return Sym(last.downcase) if @facts.scoped_enum?(last)
+        # Never an all-lowercase name. `&Vfs::error` is a signal, and some
+        # header in the tree does declare an enum constant called `error`, so
+        # asking the oracle about a lowercase name invites a false positive.
+        return Sym(last.downcase) if last.match?(/\A[A-Z]/) && @facts.scoped_enum?(last)
         return Lvar(@cst.text(node)) unless segments.first.match?(/\A[A-Z]/)
 
         Call(ConstPath(segments[0..-2].join("::")), snake(last))
@@ -352,6 +359,11 @@ module GoldenHarness
           AttrSet(expr(@cst.field(target, :argument)), member(@cst.field(target, :field)), value)
         when "subscript_expression"
           IndexSet(expr(@cst.field(target, :argument)), *subscript_indices(target), value)
+        when "qualified_identifier"
+          # `std::ignore = f()` -- a namespaced name as the target. Not a Ruby
+          # form, but it IS an assignment, and treating it as a comparison
+          # (which the fallback below did) silently dropped the call's effect.
+          Local(@cst.text(target), value)
         else
           Binary(expr(target), :==, value)
         end
@@ -469,7 +481,31 @@ module GoldenHarness
       end
 
       def lambda_node(node)
+        hoist_captures(node)
         Lambda(lambda_params(node), Body(statements_of(@cst.field(node, :body))))
+      end
+
+      # `[account = _accountState->account()] { ... }` -- a C++ init-capture,
+      # which binds a name for the lambda's body. Ruby's blocks close over the
+      # enclosing scope, so the binding becomes an ordinary local in front of
+      # the statement, which is what the golden writes.
+      def hoist_captures(node)
+        specifier = @cst.child(node, "lambda_capture_specifier")
+        return if specifier.nil? || @pending_before.nil?
+
+        @cst.named(specifier).each do |capture|
+          next unless capture.kind == "lambda_capture_initializer"
+
+          name = @cst.named(capture).first
+          value = @cst.named(capture)[1]
+          next if name.nil? || value.nil?
+          # `[path = path]` copies the enclosing local so the lambda owns its
+          # own. A Ruby block closes over it already, so hoisting this one
+          # writes `path = path`, which says nothing.
+          next if @cst.text(name) == @cst.text(value)
+
+          @pending_before << Local(local_name(@cst.text(name)), expr(value))
+        end
       end
 
       def lambda_params(node)

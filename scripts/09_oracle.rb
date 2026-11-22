@@ -113,7 +113,8 @@ facts = {
   "internal" => [],         # functions with internal linkage -> private
   "shapes" => {},           # local name  -> empty-value shape
   "integers" => [],         # names of integral type -> `!x` is `x == 0`
-  "locals" => []            # function::name -> a local, not a member
+  "locals" => [],           # function::name -> a local, not a member
+  "enum_types" => []        # an enum's own name: `LogStatus s(X)` constructs nothing
 }
 
 source = ARGV[0]
@@ -191,6 +192,8 @@ visit(translation_unit.cursor, facts) do |cursor|
     facts["enum_constants"]["#{parent}::#{name}"] = parent unless parent.empty?
   when :cursor_class_decl, :cursor_struct_decl, :cursor_union_decl, :cursor_class_template
     facts["records"] << name
+  when :cursor_enum_decl
+    facts["enum_types"] << name
   when :cursor_function, :cursor_cxx_method
     # Only this file's own functions: the system headers are full of static
     # helpers (`__bswap_16`) that have internal linkage and nothing to do with
@@ -238,6 +241,7 @@ facts["records"] = facts["records"].uniq.sort
 facts["internal"] = facts["internal"].uniq.sort
 facts["integers"] = facts["integers"].uniq.sort
 facts["locals"] = facts["locals"].uniq.sort
+facts["enum_types"] = facts["enum_types"].uniq.sort
 facts["diagnostics"] = errors
 
 File.write(target, JSON.pretty_generate(facts))

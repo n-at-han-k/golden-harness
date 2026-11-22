@@ -37,6 +37,12 @@ module RuboCop
         ASSIGNMENTS = %i[lvasgn ivasgn cvasgn gvasgn casgn op_asgn or_asgn and_asgn
                          masgn indexasgn].freeze
 
+        CONTROL_FLOW = %i[while until for case_match].freeze
+
+        # What a block can evaluate TO. A literal is a value; so is an `if`
+        # whose every branch is one.
+        LITERALS = %i[str dstr sym int float true false nil].freeze
+
         def on_block(node)
           return unless node.multiline?
           return unless node.arguments.empty?
@@ -44,6 +50,10 @@ module RuboCop
           body = node.body
           return if body.nil? || body.begin_type? || body.multiline?
           return if ASSIGNMENTS.include?(body.type)
+          return if CONTROL_FLOW.include?(body.type)
+          # A lone `if` is a value only when its branches are; see
+          # BlockDelimiters for the two shapes this separates.
+          return if branching?(body) && !value_branches?(body)
           return if assignment_send?(body)
 
           target = "#{node.send_node.source} { #{body.source} }"
@@ -54,6 +64,19 @@ module RuboCop
         end
 
         private
+
+          def branching?(node) = %i[if case].include?(node.type)
+
+          # Every branch of the `if`/`case` evaluates to a literal.
+          def value_branches?(node)
+            branches = node.type == :if ? node.children[1..] : node.children[1..]
+            branches.compact.all? do |branch|
+              next value_branches?(branch) if branching?(branch)
+              next branch.children.last && LITERALS.include?(branch.children.last.type) if branch.type == :when
+
+              LITERALS.include?(branch.type)
+            end
+          end
 
           # `a.b = c` is a send, not an assignment node.
           def assignment_send?(body) = body.send_type? && body.assignment_method?
