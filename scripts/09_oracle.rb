@@ -122,7 +122,8 @@ facts = {
   "locals" => [],           # function::name -> a local, not a member
   "enum_types" => [],       # an enum's own name: `LogStatus s(X)` constructs nothing
   "scalar_types" => [],     # a typedef over a number: `qint64(x)` converts nothing
-  "dead" => []              # a free function nothing can reach -> not emitted
+  "dead" => [],             # a free function nothing can reach -> not emitted
+  "categories" => {}        # lcFileSystem -> "sync.filesystem", tree-wide
 }
 
 # The three sets `dead` is worked out from, which the walk fills as it goes.
@@ -132,6 +133,26 @@ referenced = {}             # spelling -> true, so something calls it
 
 source = ARGV[0]
 target = ARGV[1]
+
+# Q_LOGGING_CATEGORY across the WHOLE TREE rather than this translation unit.
+#
+# `Q_LOGGING_CATEGORY(lcFileSystem, "sync.filesystem", QtInfoMsg)` is in
+# filesystembase.cpp, and three of the files that LOG to that category are
+# other translation units: they include a header carrying only the
+# `Q_DECLARE_LOGGING_CATEGORY`, which has no string in it. Their log calls came
+# out as `Log.warn("lcFileSystem")` -- the name of the C++ variable in place of
+# the category it holds -- 36 times across three files.
+CATEGORY_DECL = /Q_LOGGING_CATEGORY\s*\(\s*(\w+)\s*,\s*"([^"]+)"/
+tree = source.split(File::SEPARATOR).first
+tree = File.dirname(source) unless tree && File.directory?(tree)
+Dir.glob(File.join(tree, "**", "*.{cpp,full,h,hpp}")).sort.each do |path|
+  text = begin
+    File.read(path)
+  rescue ArgumentError, Errno::ENOENT
+    next
+  end
+  text.scan(CATEGORY_DECL) { |name, value| facts["categories"][name] = value }
+end
 abort "usage: 09_oracle.rb <source> <facts.json>" if source.nil? || target.nil?
 
 translation_unit = FFI::Clang::Index.new.parse_translation_unit(source, ARGS)
@@ -262,14 +283,32 @@ visit(translation_unit.cursor, facts) do |cursor|
       facts["locals"] << "#{snake(scope_name)}::#{snake(name.sub(/\A_/, ""))}"
     end
 
-    shape = shape_of(cursor.type)
-    next if shape.nil?
+    # "other" rather than nothing when the type has no shape of its own.
+    #
+    # Recording only the shapes it recognised left no way to tell "declared
+    # here, and not an integer" from "not declared here at all", so a lookup
+    # that missed fell back to the bare name -- and the bare name is whatever
+    # was recorded last for that spelling anywhere in the unit.
+    # `std::error_code ec` has no shape, so `!ec` took the "int" of an
+    # unrelated `ec` and became `ec == 0`, which asks a different question of a
+    # class with its own `operator bool`.
+    shape = shape_of(cursor.type) || "other"
 
     # Scoped as well as bare. A name is only unique within its function --
     # `columns` is a QVector in one method and a parameter in another -- so the
     # bare key is a fallback and the scoped one is what resolves it.
     facts["shapes"][snake(name)] = shape
     facts["shapes"]["#{snake(scope)}::#{snake(name)}"] = shape if scope
+    # A FIELD is scoped by its class, not by a function -- it has no enclosing
+    # one, so the line above never keyed it. jobqueue.h declares
+    # `uint _blocked = 0` in JobQueue and `bool _blocked = false` in
+    # JobQueueGuard, and on the bare name alone the second overwrote the first:
+    # the integer read as a bool, so `if (_blocked)` was left as a bare Ruby
+    # truthiness test that is also taken for 0.
+    if cursor.kind == :cursor_field_decl
+      owner = cursor.semantic_parent&.spelling.to_s
+      facts["shapes"]["#{owner}::#{snake(name)}"] = shape unless owner.empty?
+    end
     # A LOCAL, as against a member of the class. `_exec` is a local lambda and
     # the golden drops its underscore; `_dbFile` is a member and keeps it as
     # the `@`. Nothing in the spelling tells them apart.

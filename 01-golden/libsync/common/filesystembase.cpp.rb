@@ -74,7 +74,7 @@ module OCC
       permissions = file.permissions
       all_write_permissions = :write_user | :write_group | :write_other | :write_owner
       default_write_permissions = get_default_write_permissions
-      permissions &= all_write_permissions
+      permissions &= (~all_write_permissions)
 
       if !readonly
         permissions |= default_write_permissions

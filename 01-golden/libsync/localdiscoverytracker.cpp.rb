@@ -58,15 +58,21 @@ class LocalDiscoveryTracker
   def slot_item_completed(item)
     case item.status
     when :no_status
-      unless item.instruction & (CSYNC_INSTRUCTION_NONE | CSYNC_INSTRUCTION_UPDATE_METADATA)
-        Q_FALLTHROUGH()
+      unless item.instruction & (~(CSYNC_INSTRUCTION_NONE | CSYNC_INSTRUCTION_UPDATE_METADATA))
+        if @previous_local_discovery_paths.erase(item.local_name)
+          Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
+        end
+
+        if (
+          !item.rename_target.is_empty &&
+          @previous_local_discovery_paths.erase(item.rename_target)
+        )
+          Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
+        end
+
+        return
       end
-
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-
+    when :success, :file_ignored, :restoration, :conflict, :message
       if @previous_local_discovery_paths.erase(item.local_name)
         Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
       end
@@ -79,106 +85,7 @@ class LocalDiscoveryTracker
       end
 
       return
-    when :success
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-
-      if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
-      end
-
-      if (
-        !item.rename_target.is_empty &&
-        @previous_local_discovery_paths.erase(item.rename_target)
-      )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
-      end
-
-      return
-    when :file_ignored
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-
-      if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
-      end
-
-      if (
-        !item.rename_target.is_empty &&
-        @previous_local_discovery_paths.erase(item.rename_target)
-      )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
-      end
-
-      return
-    when :restoration
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-
-      if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
-      end
-
-      if (
-        !item.rename_target.is_empty &&
-        @previous_local_discovery_paths.erase(item.rename_target)
-      )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
-      end
-
-      return
-    when :conflict
-      Q_FALLTHROUGH()
-
-      if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
-      end
-
-      if (
-        !item.rename_target.is_empty &&
-        @previous_local_discovery_paths.erase(item.rename_target)
-      )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
-      end
-
-      return
-    when :message
-      if @previous_local_discovery_paths.erase(item.local_name)
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.local_name}" }
-      end
-
-      if (
-        !item.rename_target.is_empty &&
-        @previous_local_discovery_paths.erase(item.rename_target)
-      )
-        Log.debug("sync.localdiscoverytracker") { "wiped successful item #{item.rename_target}" }
-      end
-
-      return
-    when :fatal_error
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-    when :normal_error
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-    when :soft_error
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-    when :detail_error
-      Q_FALLTHROUGH()
-      Q_FALLTHROUGH()
-    when :blacklisted_error
-      Q_FALLTHROUGH()
-    when :excluded, :filename_reserved
+    when :fatal_error, :normal_error, :soft_error, :detail_error, :blacklisted_error, :excluded, :filename_reserved
       nil
     when :status_count
       raise

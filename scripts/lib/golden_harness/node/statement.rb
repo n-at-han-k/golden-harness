@@ -5,10 +5,19 @@ module GoldenHarness
     ASSERTIONS = %w[OC_ASSERT OC_ASSERT_X OC_ENFORCE OC_ENFORCE_X Q_ASSERT Q_ASSERT_X].freeze
     UNREACHABLE = %w[Q_UNREACHABLE OC_UNREACHABLE].freeze
 
+    # Qt's spelling of `[[fallthrough]]`, which is a STATEMENT rather than an
+    # attribute and so is invisible to `fallthrough?`'s attribute test.
+    #
+    # localdiscoverytracker.cpp writes it 30 times and every one came out as a
+    # bare `Q_FALLTHROUGH()` call -- which also kept each label's body
+    # non-empty, so the labels never merged into one `when` and each arm
+    # collected the arms below it.
+    FALLTHROUGH = %w[Q_FALLTHROUGH OC_FALLTHROUGH].freeze
+
     # `Q_UNUSED(x)` tells the C++ compiler not to warn. Ruby has no equivalent
     # and needs none: dropping it leaves the parameter unused, and rubocop's
     # Lint/UnusedMethodArgument renames it to `_x`, which is the golden's form.
-    DROPPED = %w[Q_UNUSED].freeze
+    DROPPED = (%w[Q_UNUSED] + FALLTHROUGH).freeze
     ::GoldenHarness::Emitter::DROPPED = DROPPED unless
       ::GoldenHarness::Emitter.const_defined?(:DROPPED, false)
 
@@ -143,6 +152,14 @@ module GoldenHarness
       end
 
       def fallthrough?(node)
+        # `Q_FALLTHROUGH();` -- a call, where `[[fallthrough]];` is an
+        # attribute. Both say the same thing and neither carries into Ruby.
+        if node.kind == "expression_statement"
+          call = @cst.dig(node, "call_expression")
+          name = call && @cst.field(call, :function)
+          return !name.nil? && name.kind == "identifier" &&
+                 FALLTHROUGH.include?(@cst.text(name))
+        end
         return false unless node.kind == "attributed_statement"
 
         @cst.descendants(node).any? do |inner|
@@ -478,7 +495,7 @@ module GoldenHarness
             inner = @cst.named(alternative).first
             Body(stmt(inner))
           end
-        If(condition(node), Body(statements_of(@cst.field(node, :consequence))), else_body)
+        If(test(node), Body(statements_of(@cst.field(node, :consequence))), else_body)
       end
 
       # `do { ... } while (cond);` -- the body runs before the test, which is
@@ -495,8 +512,7 @@ module GoldenHarness
       # this did before, is an infinite loop.
       def do_while(node)
         body = statements_of(@cst.field(node, :body))
-        test = condition(node)
-        Loop(Body(body + [Unless(test, Break_())]))
+        Loop(Body(body + [Unless(test(node), Break_())]))
       end
 
       # `while ((index = p.lastIndexOf('/')) != -1)`.
@@ -510,7 +526,7 @@ module GoldenHarness
         inner = clause && @cst.named(clause).reject { _1.kind == "init_statement" }.first
         found = inner && @cst.dig(inner, "assignment_expression")
         body = statements_of(@cst.field(node, :body))
-        return [While(condition(node), Body(body))] if found.nil?
+        return [While(test(node), Body(body))] if found.nil?
 
         hoisted = expr(found)
         @condition_targets << found.start_byte
@@ -525,6 +541,26 @@ module GoldenHarness
         # Past an init_statement, which if_statement has already hoisted out.
         inner = @cst.named(clause).reject { _1.kind == "init_statement" }.first
         inner ? expr(inner) : Nil_()
+      end
+
+      # A BRANCH's condition, where an integer is tested for being non-zero.
+      #
+      # `if (_blocked)` in C++ means `_blocked != 0`. Ruby has no falsy zero, so
+      # written as a bare `if @blocked` the branch is taken for 0 as well --
+      # `JobQueue#retry` queued the job instead of retrying it whenever the
+      # queue was NOT blocked, and `enqueue` queued instead of refusing.
+      # `negate` has always done the mirror of this for `!x`; the positive test
+      # was simply never converted.
+      #
+      # Not `condition`, which a `switch` subject also uses: `case x != 0` is
+      # not what a switch over an integer means.
+      def test(node)
+        clause = @cst.field(node, :condition)
+        inner = @cst.named(clause).reject { _1.kind == "init_statement" }.first
+        return Nil_() if inner.nil?
+        return Binary(expr(inner), :!=, Int(0)) if integer?(inner)
+
+        expr(inner)
       end
 
       # `for (auto &e : coll)` -> `coll.each do |e|`.
@@ -661,7 +697,7 @@ module GoldenHarness
                     .reject { _1.kind == "break_statement" }
                     .flat_map { stmt(_1) }.compact
         nodes[0...at].flat_map { stmt(_1) }.compact +
-          [If(condition(guard), Body(taken), Body(arm(nodes[(at + 1)..])))]
+          [If(test(guard), Body(taken), Body(arm(nodes[(at + 1)..])))]
       end
 
       # An `if` with no `else` whose body ends with the switch's own `break`.
@@ -703,11 +739,17 @@ module GoldenHarness
           # one to be exhaustive -- and the golden writes no `else` for it.
           next if nodes.empty? && value.nil?
 
+          # The continuation joins the arm's own statements BEFORE `arm` folds,
+          # so a `break` that ends the arm is seen to have statements after it.
+          # `:no_status` guards with `if (...) { break; }` and then falls
+          # through; folded, that is `unless (...)` around the shared body,
+          # where emitting the arm alone left a bare `break` with no loop to
+          # leave.
           body =
             if nodes.empty?
               Nil_()
             else
-              Body(arm(nodes) + continuation(labels, index, closes))
+              Body(arm(nodes + continuation(labels, index, closes)))
             end
           if value
             whens << When(pending + [value], body)
@@ -753,11 +795,15 @@ module GoldenHarness
       # `CSYNC_INSTRUCTION_NEW` returns a job when the item is a directory and
       # otherwise goes on to do exactly what `CSYNC_INSTRUCTION_SYNC` does, and
       # that is how the golden has it, written out in both arms.
+      #
+      # The arms' own NODES, not their emitted statements, so that the caller
+      # can hand the whole run to `arm` at once -- a `break` ending one arm has
+      # to see the next arm's statements to fold against.
       def continuation(labels, index, closes)
         out = []
         until closes || (index += 1) >= labels.size
           _value, nodes, closes = labels[index]
-          out.concat(arm(nodes))
+          out.concat(nodes)
         end
         out
       end

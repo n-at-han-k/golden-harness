@@ -433,11 +433,11 @@ module OCC
 end
 
 class AbstractNetworkJob
-  def to_s(debug)
+  def <<(debug)
     saver = QDebugStateSaver.new(debug)
     debug.set_auto_insert_spaces(false)
-    debug << job.meta_object.class_name << "(" << job.account.data << ", " << job.url.to_display_string << ", " << job.verb
-    reply = job.reply
+    debug << meta_object.class_name << "(" << account.data << ", " << url.to_display_string << ", " << @verb
+    reply = @reply
 
     if reply
       debug << ", Original-Request-ID: " << reply.request.raw_header("Original-Request-ID") << ", X-Request-ID: " << reply.request.raw_header("X-Request-ID")
@@ -452,7 +452,7 @@ class AbstractNetworkJob
       end
     end
 
-    if job.timedout
+    if @timedout
       debug << ", timedout"
     end
 

@@ -496,7 +496,7 @@ module OCC
         end
 
         if base.is_directory != item.is_directory
-          q_c_info(lc_disco, "file types different, not a rename")
+          Log.info("sync.discovery") { "file types different, not a rename" }
           done = true
 
           return
@@ -506,7 +506,7 @@ module OCC
           !server_entry.is_directory &&
           base.etag != server_entry.etag
         )
-          q_c_info(lc_disco, "file etag different, not a rename")
+          Log.info("sync.discovery") { "file etag different, not a rename" }
           done = true
 
           return
@@ -515,7 +515,7 @@ module OCC
         original_path = base.path
 
         if @discovery_data.is_renamed(original_path)
-          q_c_info(lc_disco, "folder already has a rename entry, skipping")
+          Log.info("sync.discovery") { "folder already has a rename entry, skipping" }
 
           return
         end

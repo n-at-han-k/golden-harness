@@ -25,9 +25,11 @@ module GoldenHarness
       scan
     end
 
-    def category(ident) = @categories[ident]
+    # This file's own Q_LOGGING_CATEGORY first, then the oracle's tree-wide
+    # map, which answers for a category DECLARED in another translation unit.
+    def category(ident) = @categories[ident] || oracle_categories[ident]
 
-    def category?(ident) = @categories.key?(ident)
+    def category?(ident) = @categories.key?(ident) || oracle_categories.key?(ident)
 
     # True when this name is an enum value rather than a class.
     #
@@ -64,6 +66,14 @@ module GoldenHarness
 
     # The empty value a declared type starts life as: "array", "set", "hash",
     # "string", "int", "bool" or "object:ClassName". Nil when unknown.
+    # The shape recorded for this name IN this scope, with no fallback to the
+    # bare name. `shape` falls back, which is right where any answer helps --
+    # an empty value for a declaration -- and wrong where a wrong answer
+    # changes behaviour. See `integer?`.
+    def shape_in(name, scope)
+      @oracle.fetch("shapes", {})["#{scope}::#{name}"]
+    end
+
     def shape(name, scope = nil)
       shapes = @oracle.fetch("shapes", {})
       (scope && shapes["#{scope}::#{name}"]) || shapes[name]
@@ -107,6 +117,8 @@ module GoldenHarness
     end
 
     private
+
+      def oracle_categories = @oracle_categories ||= @oracle.fetch("categories", {})
 
       def enum_constants = @enum_constants ||= @oracle.fetch("enum_constants", {})
 

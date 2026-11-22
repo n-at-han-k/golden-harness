@@ -52,7 +52,6 @@ class SyncJournalErrorBlacklistRecord
 end
 
 class SyncJournalFileRecord
-  OTHER = default
   def initialize
     @d = (lambda do
       null_data = QExplicitlySharedDataPointer.new(SyncJournalFileRecordData.new)
@@ -61,15 +60,10 @@ class SyncJournalFileRecord
     end).call
   end
 
-  def initialize(path, type)
+  def initialize_with_type(path, type)
     @d = SyncJournalFileRecordData.new
     d.path = path
     d.type = type
-  end
-
-  def initialize(error)
-    @d = SyncJournalFileRecordData.new
-    d.error = error
   end
 
   def validate_record
@@ -98,6 +92,11 @@ class SyncJournalFileRecord
     end
 
     return true
+  end
+
+  def initialize_with_error(error)
+    @d = SyncJournalFileRecordData.new
+    d.error = error
   end
 
   def query
@@ -245,14 +244,14 @@ end
 
 module OCC
   class SyncJournalFileRecord
-    def to_s(debug)
+    def <<(debug)
       saver = QDebugStateSaver.new(debug)
       debug.nospace << "SyncJournalFileRecord("
 
-      if record.has_error
-        debug << "Error: " << record.error
+      if has_error
+        debug << "Error: " << error
       else
-        debug << "path: " << record.path << ", inode: " << record.inode << ", modtime: " << record.modtime << ", type: " << record.type << ", etag: " << record.etag << ", fileId: " << record.file_id << ", remotePerm: " << record.remote_perm.to_string << ", size: " << record.size << ", checksum: " << record.checksum_header << ", serverHasIgnoredFiles: " << record.server_has_ignored_files << ", hasDirtyPlaceholder: " << record.has_dirty_placeholder
+        debug << "path: " << path << ", inode: " << inode << ", modtime: " << modtime << ", type: " << type << ", etag: " << etag << ", fileId: " << file_id << ", remotePerm: " << remote_perm.to_string << ", size: " << size << ", checksum: " << checksum_header << ", serverHasIgnoredFiles: " << server_has_ignored_files << ", hasDirtyPlaceholder: " << has_dirty_placeholder
       end
 
       return debug << ")"
@@ -262,16 +261,16 @@ module OCC
   class SyncJournalFileRecord
     def ==(other)
       return (
-        lhs.path == rhs.path &&
-        lhs.inode == rhs.inode &&
-        lhs.modtime == rhs.modtime &&
-        lhs.type == rhs.type &&
-        lhs.etag == rhs.etag &&
-        lhs.file_id == rhs.file_id &&
-        lhs.size == rhs.size &&
-        lhs.remote_perm == rhs.remote_perm &&
-        lhs.server_has_ignored_files == rhs.server_has_ignored_files &&
-        lhs.checksum_header == rhs.checksum_header
+        path == other.path &&
+        inode == other.inode &&
+        modtime == other.modtime &&
+        type == other.type &&
+        etag == other.etag &&
+        file_id == other.file_id &&
+        size == other.size &&
+        remote_perm == other.remote_perm &&
+        server_has_ignored_files == other.server_has_ignored_files &&
+        checksum_header == other.checksum_header
       )
     end
   end

@@ -169,9 +169,19 @@ module GoldenHarness
     def sends_for_free_names(node, bound = nil)
       return node unless node.is_a?(::Parser::AST::Node)
 
-      bound ||= bindings(node)
+      # Recomputed at each METHOD. Taken over the whole file, a name bound in
+      # one method kept its `lvar` spelling in another where nothing binds it,
+      # and unparser -- which tracks the scope it is emitting -- refused the
+      # string it appeared in. `path` is a local in one method of
+      # vfs_openvfs.cpp and an interpolated free name in another.
+      bound = bindings(node) if bound.nil? || %i[def defs].include?(node.type)
+      # A name that is not a plain identifier is left as it is. `lvar` will
+      # print anything; a send will not, and syncresult.cpp reached here
+      # holding an `lvar` called `:"this ="` -- a malformed node from further
+      # up, which converting turned into an unparsable one.
       return n(:send, nil, node.children.first) if
-        node.type == :lvar && !bound.include?(node.children.first)
+        node.type == :lvar && !bound.include?(node.children.first) &&
+        node.children.first.to_s.match?(/\A[a-z_]\w*[?!]?\z/)
 
       node.updated(nil, node.children.map { sends_for_free_names(_1, bound) })
     end

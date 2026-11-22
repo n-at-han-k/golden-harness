@@ -14,9 +14,25 @@ module GoldenHarness
 
       # `qCInfo(lcDisco) << u"X" << a` -- a QDebug stream, not an expression.
       def log_chain?(node)
+        return printf_log?(node) if node.kind == "call_expression"
         return false unless node.kind == "binary_expression"
 
         !log_head(node).nil?
+      end
+
+      # Qt's OTHER logging overload, `qCWarning(lcFolder, "message")`, which
+      # takes the message as arguments rather than streaming it. No `<<`, so
+      # it is not a binary_expression and never reached `log` at all: all five
+      # in the tree came out as a bare `q_c_warning(lc_folder, "...")` call,
+      # which is not a method that exists.
+      #
+      # Two arguments at least. A lone `qCDebug(lcFoo)` logs nothing and is
+      # left to the ordinary call path.
+      def printf_log?(node)
+        return false unless node.kind == "call_expression"
+        return false unless qc_call(node)&.start_byte == node.start_byte
+
+        @cst.named(@cst.field(node, :arguments)).size >= 2
       end
 
       # The `qCInfo(lcDisco)` at the far left of the chain.
@@ -140,11 +156,23 @@ module GoldenHarness
       end
 
       # The chain flattened left to right.
+      #
+      # The printf-style call is flattened to the SAME shape -- the head, then
+      # one node per message operand -- so `message`, `ternary_operand` and
+      # everything else downstream need to know nothing about which overload
+      # this was.
+      #
+      # A format string with arguments (`"%1 of %2", a, b`) would have its
+      # operands rendered side by side rather than substituted into it. No
+      # call in the tree has any: all five pass one plain literal.
       def operands(node)
-        return [node] unless node.kind == "binary_expression" &&
-                             @cst.text(@cst.field(node, :operator)) == "<<"
+        if node.kind == "binary_expression" &&
+           @cst.text(@cst.field(node, :operator)) == "<<"
+          return operands(@cst.field(node, :left)) + [@cst.field(node, :right)]
+        end
+        return [node] + @cst.named(@cst.field(node, :arguments)).drop(1) if printf_log?(node)
 
-        operands(@cst.field(node, :left)) + [@cst.field(node, :right)]
+        [node]
       end
 
       # A literal contributes its text; anything else is interpolated.

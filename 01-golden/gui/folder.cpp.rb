@@ -70,7 +70,7 @@ module OCC
         @engine.set_ignore_hidden_files(@definition.ignore_hidden_files)
 
         if !@engine.load_default_excludes
-          q_c_warning(lc_folder, "Could not read system exclude file")
+          Log.warn("gui.folder") { "Could not read system exclude file" }
           @sync_result.append_error_string("Failed to load excludes")
           set_sync_state(:setup_error)
 
@@ -395,7 +395,7 @@ module OCC
 
       error_count = @sync_result.num_error_items
 
-      if error_count
+      if error_count != 0
         create_gui_log(@sync_result.first_item_error.local_name, :log_status_error, error_count)
       end
 

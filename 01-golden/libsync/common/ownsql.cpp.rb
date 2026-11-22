@@ -59,7 +59,15 @@ module OCC
 
       sqlite_flags |= SQLITE_OPEN_NOMUTEX
       vfs = nil
-      SQLITE_DO(sqlite3_open_v2(FileSystem.long_win_path(filename).to_utf8.const_data, @db, sqlite_flags, vfs))
+      @err_id = sqlite3_open_v2(FileSystem.long_win_path(filename).to_utf8.const_data, @db, sqlite_flags, vfs)
+
+      if (
+        @err_id != SQLITE_OK &&
+        @err_id != SQLITE_DONE &&
+        @err_id != SQLITE_ROW
+      )
+        @error = QString.from_utf8(sqlite3_errmsg(@db))
+      end
 
       if @err_id != SQLITE_OK
         Log.warn("sync.database.sql") { "Error: #{@error} for #{filename}" }
@@ -192,7 +200,15 @@ module OCC
           q.finish
         end
 
-        SQLITE_DO(sqlite3_close(@db))
+        @err_id = sqlite3_close(@db)
+
+        if (
+          @err_id != SQLITE_OK &&
+          @err_id != SQLITE_DONE &&
+          @err_id != SQLITE_ROW
+        )
+          @error = QString.from_utf8(sqlite3_errmsg(@db))
+        end
 
         if @err_id != SQLITE_OK
           Log.warn("sync.database.sql") { "Closing database failed #{@error}" }
@@ -207,7 +223,15 @@ module OCC
         return false
       end
 
-      SQLITE_DO(sqlite3_exec(@db, "BEGIN", nil, nil, nil))
+      @err_id = sqlite3_exec(@db, "BEGIN", nil, nil, nil)
+
+      if (
+        @err_id != SQLITE_OK &&
+        @err_id != SQLITE_DONE &&
+        @err_id != SQLITE_ROW
+      )
+        @error = QString.from_utf8(sqlite3_errmsg(@db))
+      end
 
       return @err_id == SQLITE_OK
     end
@@ -217,7 +241,15 @@ module OCC
         return false
       end
 
-      SQLITE_DO(sqlite3_exec(@db, "COMMIT", nil, nil, nil))
+      @err_id = sqlite3_exec(@db, "COMMIT", nil, nil, nil)
+
+      if (
+        @err_id != SQLITE_OK &&
+        @err_id != SQLITE_DONE &&
+        @err_id != SQLITE_ROW
+      )
+        @error = QString.from_utf8(sqlite3_errmsg(@db))
+      end
 
       return @err_id == SQLITE_OK
     end
@@ -233,16 +265,16 @@ module OCC
       @db = db.sqlite_db
     end
 
-    def initialize(sql, db)
-      @sqldb = db
-      @db = db.sqlite_db
-      prepare(sql)
-    end
-
     def finalize
       if @stmt
         finish
       end
+    end
+
+    def initialize_with_db(sql, db)
+      @sqldb = db
+      @db = db.sqlite_db
+      prepare(sql)
     end
 
     def prepare(sql, allow_failure)
@@ -474,7 +506,16 @@ module OCC
         return
       end
 
-      SQLITE_DO(sqlite3_finalize(@stmt))
+      @err_id = sqlite3_finalize(@stmt)
+
+      if (
+        @err_id != SQLITE_OK &&
+        @err_id != SQLITE_DONE &&
+        @err_id != SQLITE_ROW
+      )
+        @error = QString.from_utf8(sqlite3_errmsg(@db))
+      end
+
       @stmt = nil
 
       if @sqldb
@@ -484,8 +525,25 @@ module OCC
 
     def reset_and_clear_bindings
       if @stmt
-        SQLITE_DO(sqlite3_reset(@stmt))
-        SQLITE_DO(sqlite3_clear_bindings(@stmt))
+        @err_id = sqlite3_reset(@stmt)
+
+        if (
+          @err_id != SQLITE_OK &&
+          @err_id != SQLITE_DONE &&
+          @err_id != SQLITE_ROW
+        )
+          @error = QString.from_utf8(sqlite3_errmsg(@db))
+        end
+
+        @err_id = sqlite3_clear_bindings(@stmt)
+
+        if (
+          @err_id != SQLITE_OK &&
+          @err_id != SQLITE_DONE &&
+          @err_id != SQLITE_ROW
+        )
+          @error = QString.from_utf8(sqlite3_errmsg(@db))
+        end
       end
     end
   end

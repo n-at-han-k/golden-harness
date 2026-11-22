@@ -12,30 +12,28 @@ tasks:
       # 02-input holds the whole source tree, so that libclang can resolve the
       # headers a translation unit includes. Only a case with a golden is a
       # gated case; the rest are there to be included, not transliterated.
+      #
+      # `-P 4`: cases run concurrently, each in its own work directory.
+      - rm -rf tmp
       - |
-        fail=0
-        for golden in $(cd 01-golden && find . -name '*.rb' | sed 's|^\./||' | sort); do
-          src="02-input/${golden%.rb}"
-          if [ ! -f "$src" ]; then
-            echo "SKIP  $golden  (no input)"
-            continue
-          fi
-          # `|| true`: go-task runs a command with errexit, and a case that
-          # differs from its golden exits non-zero, which would abort the loop
-          # on the first failure instead of reporting every case.
-          task case SRC="$src" >/dev/null 2>&1 || true
-          # `|| true` again, for the same reason, and because `grep -c` exits
-          # non-zero when the count is ZERO -- so a PASSING case would be the
-          # one that aborted the loop.
-          lines=$(diff -u "01-golden/$golden" "03-output/$golden" 2>/dev/null | grep -c '^[-+]' || true)
-          if [ "$lines" = "0" ]; then
-            echo "PASS  $golden"
-          else
-            echo "FAIL  $golden  ($lines changed lines)"
-            fail=1
-          fi
-        done
-        exit $fail
+        results=$(find 01-golden -name '*.rb' | sed 's|^01-golden/||' | sort | \
+          xargs -P 4 -I@@ sh -c '
+            golden="@@"
+            src="02-input/${golden%.rb}"
+            if [ ! -f "$src" ]; then echo "SKIP  $golden  (no input)"; exit 0; fi
+            task case SRC="$src" >/dev/null 2>&1 || true
+            # `|| true` twice over: a differing case exits non-zero, and so
+            # does `grep -c` when the count is ZERO -- the PASSING case.
+            lines=$(diff -u "01-golden/$golden" "03-output/$golden" 2>/dev/null | grep -c "^[-+]" || true)
+            if [ "$lines" = "0" ]; then
+              echo "PASS  $golden"
+            else
+              echo "FAIL  $golden  ($lines changed lines)"
+            fi
+          ')
+        printf '%s\n' "$results" | sort
+        printf '%s\n' "$results" | grep -q '^FAIL' && exit 1
+        exit 0
 
   case:
     desc: Run the pipeline on SRC and diff the result against its golden
@@ -44,33 +42,36 @@ tasks:
     vars:
       REL: '{{trimPrefix "02-input/" .SRC}}'
       STAGE: '{{trimSuffix ".full" (trimPrefix "02-input/" .SRC)}}'
+      # This case's OWN work directory, so cases can run concurrently. A shared
+      # `tmp/` wiped on entry meant two at once deleted each other's input.
+      WORK: 'tmp/{{replace "/" "_" (trimSuffix ".cpp" (trimPrefix "02-input/" .SRC))}}/work'
     cmds:
-      - rm -rf tmp && mkdir -p "tmp/work/$(dirname {{.STAGE}})" && cp {{.SRC}} tmp/work/{{.STAGE}}
+      - rm -rf {{.WORK}} && mkdir -p "{{.WORK}}/$(dirname {{.STAGE}})" && cp {{.SRC}} {{.WORK}}/{{.STAGE}}
       # The type oracle. libclang sees the headers, so what the syntax alone
       # can only guess at -- an enum constant against a static method, a
       # container's element type, internal linkage -- is answered rather than
       # inferred. Advisory: the emitter falls back to its own reading when a
       # fact is absent.
-      - ruby scripts/09_oracle.rb {{.SRC}} tmp/work/facts.json || true
-      - python3 scripts/02_prepare.py tmp/work tmp/work
-      - ast-grep scan -c sgconfig.yml -r scripts/rules/01_alias.yml --update-all tmp/work
-      - ast-grep scan -c sgconfig.yml -r scripts/rules/02_typos.yml --update-all tmp/work
+      - ruby scripts/09_oracle.rb {{.SRC}} {{.WORK}}/facts.json || true
+      - python3 scripts/02_prepare.py {{.WORK}} {{.WORK}}
+      - ast-grep scan -c sgconfig.yml -r scripts/rules/01_alias.yml --update-all {{.WORK}}
+      - ast-grep scan -c sgconfig.yml -r scripts/rules/02_typos.yml --update-all {{.WORK}}
       - |
         for i in $(seq 20); do
           # 2>&1 matters: ast-grep reports "Applied N changes" on STDERR, so a
           # bare $(...) captures nothing and the loop breaks after one round.
-          out=$(ast-grep scan -c sgconfig.yml -r scripts/rules/03_simplify.yml --update-all tmp/work 2>&1)
+          out=$(ast-grep scan -c sgconfig.yml -r scripts/rules/03_simplify.yml --update-all {{.WORK}} 2>&1)
           echo "$out"
           case "$out" in
             *Applied*) ;;
             *) echo "simplify: fixpoint after $i round(s)"; break ;;
           esac
         done
-      - ast-grep scan -c sgconfig.yml -r scripts/rules/04_interp.yml --update-all tmp/work
+      - ast-grep scan -c sgconfig.yml -r scripts/rules/04_interp.yml --update-all {{.WORK}}
       # The emitter. Builds a `parser` AST from the C++ tree and lets unparser
       # print it, so recursion is Ruby's and there is no DEPTH to unroll.
-      - ruby scripts/08_emit.rb tmp/work
-      - cp tmp/work/{{.STAGE}} tmp/work/{{.STAGE}}.rb
-      - '{{.RUBOCOP}} -A -c .rubocop.yml tmp/work/{{.STAGE}}.rb || true'
-      - mkdir -p "03-output/$(dirname {{.REL}})" && cp tmp/work/{{.STAGE}}.rb 03-output/{{.REL}}.rb
+      - ruby scripts/08_emit.rb {{.WORK}}
+      - cp {{.WORK}}/{{.STAGE}} {{.WORK}}/{{.STAGE}}.rb
+      - '{{.RUBOCOP}} -A -c .rubocop.yml {{.WORK}}/{{.STAGE}}.rb || true'
+      - mkdir -p "03-output/$(dirname {{.REL}})" && cp {{.WORK}}/{{.STAGE}}.rb 03-output/{{.REL}}.rb
       - diff -u 01-golden/{{.REL}}.rb 03-output/{{.REL}}.rb

@@ -630,7 +630,7 @@ rule:
     - kind: identifier
     - kind: field_identifier
   pattern: $ID
-  regex: '^[a-z][a-zA-Z0-9]*[A-Z]'
+  regex: '^[a-z][a-zA-Z0-9_]*[A-Z]'
   not:
     any:
       - { regex: '^qC[A-Z]' }
@@ -655,7 +655,7 @@ rule:
     - kind: identifier
     - kind: field_identifier
   pattern: $MID
-  regex: '^_[a-z][a-zA-Z0-9]*[A-Z]'
+  regex: '^_[a-z][a-zA-Z0-9_]*[A-Z]'
 transform:
   MBARE:
     replace: { source: $MID, replace: '^_', by: '' }
@@ -779,6 +779,25 @@ rule:
                   - has: { field: alternative, pattern: $AE }
 fix: |-
   if ($AC) { $AN = $AT; } else { $AN = $AE; }
+---
+# `if (1) { ... }` -> the statements.
+#
+# The idiom a function-like macro is written with so that its expansion
+# swallows the trailing semicolon at the call site. `SQLITE_DO(A)` in
+# ownsql.cpp is `if (1) { _errId = (A); if (...) { ... } }`, and once
+# `expand_macros` splices its continued body and inlines it, the wrapper is all
+# that is left of the macro -- `if 1` in Ruby, which is always taken and says
+# nothing.
+#
+# `if (1)` only, not `if (true)`: this is the macro idiom, and a real
+# `if (true)` in the source would be the author saying something.
+id: s-drop-always-true-if
+language: cpp
+severity: hint
+rule:
+  kind: if_statement
+  pattern: if (1) { $$$MACROBODY }
+fix: "$$$MACROBODY"
 ---
 # A pointer dereference loses its `*`: `needsMetadataUpdate(*item)` -> `(item)`.
 #

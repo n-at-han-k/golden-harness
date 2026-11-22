@@ -35,6 +35,7 @@ module GoldenHarness
       @hoisted = []
       @method_name = nil
       @class_name = nil
+      @open_scope = nil
       @pending_updates = nil
       @pending_before = nil
       @constants = Set.new
@@ -272,7 +273,14 @@ module GoldenHarness
               current = []
             end
             @class_name = at
+            # The class block currently OPEN, which is what tells a free
+            # `operator<<` whether it is already inside the class it streams.
+            # `@class_name` is not that: it outlives the namespace walk, so an
+            # operator written AFTER `namespace OCC { }` closes still saw the
+            # last class set inside it.
+            @open_scope = at
             current.concat(function(child))
+            @open_scope = nil
           else
             current.concat(top_level(child))
           end
@@ -478,13 +486,36 @@ module GoldenHarness
 
         type = @cst.dig(parameters[1], "type_identifier")
         stream = @cst.dig(parameters[0], "identifier", field: :declarator)
-        return nil if type.nil? || stream.nil?
+        record = @cst.dig(parameters[1], "identifier", field: :declarator)
+        return nil if type.nil? || stream.nil? || record.nil?
+        # A Ruby class name is a CONSTANT. `operator<<(QDebug,
+        # std::chrono::nanoseconds)` streams a type whose own name is
+        # lowercase, and `class nanoseconds` does not parse; it stays an
+        # ordinary free method instead.
+        return nil unless @cst.text(type).match?(/\A[A-Z]/)
 
         @function = node
+        # The RECORD becomes the receiver, the same way `operator==`'s left
+        # operand does: `record.hasError()` is `has_error` and `record._path`
+        # is `@path`. Without this the parameter was dropped from the
+        # signature and its name left dangling through the whole body.
+        @operator_lhs = @cst.text(record)
         body = Body(statements_of(@cst.field(node, :body)))
+        @operator_lhs = nil
         @function = nil
 
-        [Class_(@cst.text(type), Def("to_s", [@cst.text(stream)], body))]
+        # Named after the operator, as a member `operator==` is -- NOT `to_s`,
+        # which was the first choice and is a trap: `to_s` is called with no
+        # arguments by string interpolation and by `Array#join`, so
+        # `"#{record}"` raised ArgumentError on every record in the file.
+        method = Def(OPERATORS.fetch("operator<<"), [@cst.text(stream)], body)
+        # Already inside the class this streams: the method joins that body
+        # rather than opening a second block. `class Path` wrapped around it
+        # inside the open `class Path` of path.cpp declared `Path::Path`, a
+        # NESTED class, and the operator went on that instead of on `Path`.
+        return [method] if @cst.text(type) == @open_scope
+
+        [Class_(@cst.text(type), method)]
       end
 
       # `void A::f(a, b) { ... }` -> `def f(a, b)`.
@@ -564,10 +595,60 @@ module GoldenHarness
       # name Ruby gives the hook that runs when an object goes away. Both are
       # spelled with the class's own name in C++, and the `~` is the only thing
       # that tells them apart.
+      # A constructor is `initialize` and a destructor `finalize` -- through the
+      # same counter as any other overload, because C++ overloads constructors
+      # too and Ruby has one method per name. `SyncJournalFileRecord` declares
+      # three, and emitting all three as `initialize` meant the last silently
+      # replaced the other two; `SqlQuery` lost one the same way, and
+      # `SyncEngine` had two `finalize`.
       def ruby_method_name(name, declarator)
-        return disambiguate(name, declarator) unless name == @class_name
+        # Snaked HERE rather than in `method_name`, which has to answer with
+        # the C++ spelling for the comparison on this line to recognise a
+        # constructor -- `snake("Platform")` is `platform`, which is not the
+        # class name, and every constructor in the tree became an ordinary
+        # method of that name.
+        #
+        # The qualified branch of `method_name` returns the name as written,
+        # so an out-of-line member kept its C++ spelling while every CALL went
+        # through `snake`: `FileSystem::time_tToFileTime` was defined as
+        # `time_tToFileTime` and called as `time_t_to_file_time`. The rename is
+        # normally done upstream by `s-snake-identifier`, so this only showed
+        # on a name that rule missed; doing it here means a miss up there can
+        # no longer split a method from its callers.
+        return disambiguate(snake(name), declarator) unless name == @class_name
 
-        @cst.dig?(declarator, "destructor_name") ? "finalize" : "initialize"
+        special = @cst.dig?(declarator, "destructor_name") ? "finalize" : "initialize"
+        # A real method of that name keeps it, and the special member takes the
+        # suffix -- whichever comes first in the file. `SyncEngine::finalize(bool)`
+        # is called seven times and `~SyncEngine()` is called never, so renaming
+        # the method would have left all seven calls pointing at the destructor.
+        return "#{special}_2" if declares_method?(special)
+
+        disambiguate(special, declarator)
+      end
+
+      # Whether the class being emitted declares an ordinary method of this
+      # name. Read from the whole file up front, because the definitions are
+      # emitted in source order and the collision can come either way round.
+      def declares_method?(name)
+        @declared ||= scan_declared_methods
+        @declared.fetch(@class_name, nil)&.include?(name) || false
+      end
+
+      def scan_declared_methods
+        found = {}
+        @cst.descendants(@cst.root).each do |node|
+          next unless node.kind == "function_definition"
+
+          declarator = @cst.dig(node, "function_declarator", field: :declarator)
+          next if declarator.nil? || @cst.dig?(declarator, "destructor_name")
+
+          plain = method_name(declarator)
+          next if plain.nil? || plain == definition_scope(node)
+
+          (found[definition_scope(node)] ||= Set.new) << plain
+        end
+        found
       end
 
       # C++ overloads on the parameter list; Ruby has one method per name.
@@ -587,7 +668,13 @@ module GoldenHarness
 
         extra = @cst.named(@cst.field(declarator, :parameters)).last
         tail = extra && @cst.dig(extra, "identifier", field: :declarator)
-        tail ? "#{name}_with_#{snake(@cst.text(tail))}" : "#{name}_#{count}"
+        candidate = tail ? "#{name}_with_#{snake(@cst.text(tail))}" : "#{name}_#{count}"
+        # The SUFFIXED name is counted too. Five of `SimpleNetworkJob`'s
+        # constructors end in `QObject *parent`, so the last parameter did not
+        # separate them: all five came out `initialize_with_parent` and four
+        # were silently replaced by the fifth.
+        taken = seen[candidate] = seen.fetch(candidate, 0) + 1
+        taken == 1 ? candidate : "#{candidate}_#{taken}"
       end
 
       # The C++ operators Ruby spells the same way, plus the two it does not.
@@ -637,9 +724,15 @@ module GoldenHarness
             name = @cst.dig(param, "identifier", field: :declarator)
             next "_" if name.nil?
 
-            unused?(definition, @cst.text(name)) ? "_#{@cst.text(name)}" : @cst.text(name)
+            # Through `local_name`, the same as every mention of the name in
+            # the body. `QString Utility::escape(const QString &in)` emitted
+            # `def escape(in)` -- `in` is a Ruby keyword -- while the body used
+            # the renamed `in_`, so the signature and its uses disagreed and
+            # the file did not parse.
+            text = local_name(@cst.text(name))
+            unused?(definition, @cst.text(name)) ? "_#{text}" : text
           when "variadic_parameter_declaration"
-            "*#{@cst.text(@cst.dig(param, "identifier", field: :declarator))}"
+            "*#{local_name(@cst.text(@cst.dig(param, "identifier", field: :declarator)))}"
           end
         end
       end
@@ -741,11 +834,29 @@ module GoldenHarness
         end
       end
 
+      # A C++ special member the compiler writes:
+      #
+      #   SyncJournalFileRecord::~SyncJournalFileRecord() = default;
+      #   SyncJournalFileRecord(const SyncJournalFileRecord &other) = default;
+      #   SyncJournalFileRecord &operator=(const SyncJournalFileRecord &) = default;
+      #
+      # There is no body to carry across and Ruby has the behaviour already, so
+      # it emits nothing. `= delete` likewise: it REMOVES a member, and Ruby
+      # has nothing to remove.
+      #
+      # Without this the declaration read as a constant whose name came out of
+      # the parameter list and whose value was the keyword: `OTHER = default`.
+      def defaulted?(value)
+        !value.nil? && value.kind == "identifier" &&
+          %w[default delete].include?(@cst.text(value))
+      end
+
       def namespace_constant(node)
         init = @cst.child(node, "init_declarator", field: :declarator)
         name = init && @cst.dig(init, "identifier")
         value = init && @cst.field(init, :value)
         return [] if name.nil? || value.nil?
+        return [] if defaulted?(value)
         return [] if orphaned?(@cst.text(name))
 
         @constants << @cst.text(name)

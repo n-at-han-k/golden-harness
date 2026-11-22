@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -f \"SUCCESS_CRITERIA\" ]; then { echo 'Do not insult the user by stopping unless the success criteria is complete:'; cat \"SUCCESS_CRITERIA\" >&2; exit 2; }; fi"
+            "command": "if [ -f \"SUCCESS_CRITERIA\" ]; then { echo 'Do not insult the user by stopping unless the success criteria is complete:' >&2; cat \"SUCCESS_CRITERIA\" >&2; exit 2; }; fi"
           }
         ]
       }

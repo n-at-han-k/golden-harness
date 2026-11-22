@@ -115,13 +115,30 @@ module RuboCop
         # `@metadata_table_is_empty = get_file_record_count == 0` without them
         # and `modified_on_server = (item.instruction & (...))` with them, and
         # width is what separates the two.
+        # A value that is a plain CALL or name, as against an operator written
+        # as one. Its parens are never load-bearing: rule 4 wraps a boolean
+        # value and leaves this alone, so the width limit does not apply.
+        #
+        # `SQLITE_DO`'s body is `_errId = (A);`, where the parens keep the
+        # macro argument intact in C++ and group nothing in Ruby -- and at the
+        # longest call site they were over the limit and stayed.
+        PLAIN = %i[lvar ivar cvar gvar const str sym int float true false nil self].freeze
+
+        def plain_value?(node)
+          return true if PLAIN.include?(node.type)
+
+          node.send_type? && !node.operator_method? && !node.comparison_method?
+        end
+
         def drop_value_parens(node, value)
           return if value.nil? || value.multiline?
           return unless value.begin_type? && value.children.one?
-          return if value.source.length >= MIN_WIDTH
+
+          inner = value.children.first
+          return if value.source.length >= MIN_WIDTH && !plain_value?(inner)
 
           add_offense(value, message: MSG_REDUNDANT) do |corrector|
-            corrector.replace(value, value.children.first.source)
+            corrector.replace(value, inner.source)
           end
         end
 

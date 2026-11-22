@@ -86,6 +86,39 @@ def substitute(body: str, params: list[str], args: list[str]) -> str:
     return pattern.sub(lambda m: binding[m.group(1)], body)
 
 
+def splice_defines(lines: list[str]) -> list[str]:
+    """Join a backslash-continued `#define` onto one line, as the preprocessor does.
+
+    `expand_macros` reads a macro off a SINGLE line and skips one that is
+    continued, so a multi-line body was neither expanded nor removed and the
+    macro reached the emitter as a call to something that does not exist:
+    `SQLITE_DO(sqlite3_close(@db))`, seven times in ownsql.cpp.
+
+    Only a `#define` is spliced. An ordinary continued line -- a long string
+    literal, say -- is left alone, because joining those would move code onto
+    lines the author did not write it on and the goldens keep that grouping.
+    """
+    out: list[str] = []
+    pending: str | None = None
+    for line in lines:
+        if pending is not None:
+            pending += ' ' + line.strip().removesuffix('\\').rstrip()
+            if not line.rstrip().endswith('\\'):
+                out.append(pending)
+                out.append('')          # keep the line count, so #line-ish offsets hold
+                pending = None
+            else:
+                out.append('')
+            continue
+        if DEFINE.match(line) and line.rstrip().endswith('\\'):
+            pending = line.rstrip().removesuffix('\\').rstrip()
+            continue
+        out.append(line)
+    if pending is not None:
+        out.append(pending)
+    return out
+
+
 def expand_macros(source: str) -> str:
     """Expand this file's own #define macros, then drop their definitions.
 
@@ -101,7 +134,7 @@ def expand_macros(source: str) -> str:
     """
     macros: dict[str, tuple[list[str], str]] = {}
     kept: list[str] = []
-    for line in source.split('\n'):
+    for line in splice_defines(source.split('\n')):
         m = DEFINE.match(line)
         if m and not line.rstrip().endswith('\\'):
             name = m.group('name')
@@ -172,12 +205,162 @@ def quote(text: str) -> str:
     return text.replace('\\', '\\\\').replace('"', '\\"')
 
 
+# The tokens an `#if` expression may hold for `evaluate` to have an opinion.
+# Anything else -- a comparison, arithmetic, a function-like macro -- makes it
+# return None, and the name-presence reading in `verdict` takes over.
+CONDITION_TOKEN = re.compile(
+    r'(?P<name>[A-Za-z_]\w*)'
+    r'|(?P<number>\d+[uUlL]*)'
+    r'|(?P<op>&&|\|\||[!()])')
+
+
+def tokenize_condition(expr: str) -> list[str] | None:
+    tokens: list[str] = []
+    i = 0
+    while i < len(expr):
+        if expr[i].isspace():
+            i += 1
+            continue
+        m = CONDITION_TOKEN.match(expr, i)
+        if not m:
+            return None
+        i = m.end()
+        if m.group('number') is not None:
+            value = int(re.sub(r'[uUlL]*$', '', m.group('number')))
+            tokens.append('1' if value else '0')
+        else:
+            tokens.append(m.group('name') or m.group('op'))
+    return tokens
+
+
+def known(name: str) -> bool | None:
+    if name in PLATFORM_ON:
+        return True
+    if name in PLATFORM_OFF:
+        return False
+    return None
+
+
+def evaluate(expr: str) -> bool | None:
+    """Three-valued evaluation of a preprocessor condition.
+
+    True and False mean the branch is certainly taken or certainly not, on the
+    one platform this harness targets. None means undecided -- an unknown name
+    whose value the structure does not make irrelevant.
+
+    Kleene logic, so one known operand can still settle the whole expression:
+    `1 || UNKNOWN` is true and `0 && UNKNOWN` is false. That is what makes
+    `defined(Q_OS_MAC) || defined(Q_OS_LINUX)` come out TRUE rather than the
+    "mixed" the name-presence test called it.
+    """
+    tokens = tokenize_condition(expr)
+    if tokens is None:
+        return None
+
+    state = {'pos': 0}
+
+    def peek() -> str | None:
+        return tokens[state['pos']] if state['pos'] < len(tokens) else None
+
+    def take() -> None:
+        state['pos'] += 1
+
+    def primary() -> bool | None:
+        token = peek()
+        if token is None:
+            raise ValueError(expr)
+        if token == '!':
+            take()
+            value = primary()
+            return None if value is None else not value
+        if token == '(':
+            take()
+            value = disjunction()
+            if peek() != ')':
+                raise ValueError(expr)
+            take()
+            return value
+        if token == 'defined':
+            take()
+            parenthesised = peek() == '('
+            if parenthesised:
+                take()
+            name = peek()
+            if name is None or not name.isidentifier():
+                raise ValueError(expr)
+            take()
+            if parenthesised:
+                if peek() != ')':
+                    raise ValueError(expr)
+                take()
+            return known(name)
+        if token in ('0', '1'):
+            take()
+            return token == '1'
+        if token.isidentifier():
+            take()
+            # A bare name under `#ifdef`, and `#if NAME` where an undefined
+            # name evaluates to 0: both are the defined-test for these macros.
+            return known(token)
+        raise ValueError(expr)
+
+    def conjunction() -> bool | None:
+        value = primary()
+        while peek() == '&&':
+            take()
+            right = primary()
+            if value is False or right is False:
+                value = False
+            elif value is None or right is None:
+                value = None
+            else:
+                value = True
+        return value
+
+    def disjunction() -> bool | None:
+        value = conjunction()
+        while peek() == '||':
+            take()
+            right = conjunction()
+            if value is True or right is True:
+                value = True
+            elif value is None or right is None:
+                value = None
+            else:
+                value = False
+        return value
+
+    try:
+        value = disjunction()
+    except (ValueError, IndexError):
+        return None
+    # A trailing token means the expression held something this does not model,
+    # so the parse above describes only a prefix of it: no opinion.
+    return value if state['pos'] == len(tokens) else None
+
+
 def resolve_conditionals(lines: list[str]) -> list[str]:
     out: list[str] = []
     # stack of (is_platform_conditional, keeping_now, already_taken)
     stack: list[tuple[bool, bool, bool]] = []
 
     def verdict(expr: str) -> bool | None:
+        # Evaluated, not sniffed for names. `defined(Q_OS_MAC) ||
+        # defined(Q_OS_LINUX)` holds an ON name and an OFF name, so the
+        # name-presence test below called it "mixed" and kept the conditional
+        # -- which, once `drop_conditionals` strips the directives, runs the
+        # `#if`, `#elif` and `#else` bodies together. filesystem.cpp's
+        # `Tags::set` ended with the Linux xattr path, then the Windows path,
+        # then `return "Not implemented"`, all in the one method.
+        decided = evaluate(expr)
+        if decided is not None:
+            return decided
+
+        # The name-presence reading, kept for an expression the evaluator
+        # cannot settle: an unknown name beside a known one, where the
+        # structure does not decide it. `defined(Q_OS_MAC) ||
+        # defined(Q_OS_FREEBSD_KERNEL)` is off-or-unknown, which Kleene leaves
+        # open and this calls false.
         on = any(re.search(r'\b' + re.escape(n) + r'\b', expr) for n in PLATFORM_ON)
         off = any(re.search(r'\b' + re.escape(n) + r'\b', expr) for n in PLATFORM_OFF)
         if on and not off:

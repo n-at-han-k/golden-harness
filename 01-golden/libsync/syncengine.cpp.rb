@@ -74,7 +74,7 @@ module OCC
       @sync_file_status_tracker.reset(SyncFileStatusTracker.new(this))
     end
 
-    def finalize
+    def finalize_2
       unless !is_sync_running
         raise
       end

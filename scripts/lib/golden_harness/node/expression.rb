@@ -20,6 +20,27 @@ module GoldenHarness
     # Smart-pointer factories: the thing being made is the template argument.
     MAKERS = %w[make_unique make_shared std::make_unique std::make_shared].freeze
 
+    # A braced container is a Ruby LITERAL, not a construction:
+    # `QList<QByteArray>{"GET", "PUT"}` is `["GET", "PUT"]`. Built as a
+    # construction it came out `QList<QByteArray>.new(...)`, where the template
+    # arguments in the method name do not parse.
+    CONTAINERS = {
+      array: %w[QList QVector QStringList QByteArrayList QStack QQueue
+                std::vector std::deque std::list std::initializer_list
+                vector deque list initializer_list],
+      set: %w[QSet std::set std::unordered_set set unordered_set]
+    }.freeze
+
+    # A smart pointer carries OWNERSHIP, which Ruby's collector already does,
+    # so `std::unique_ptr<Platform>{new UnixPlatform(t)}` is the
+    # `UnixPlatform.new(t)` inside it. Built as a construction of its own it
+    # came out `std::unique_ptr<Platform>.new(...)`, and template arguments in
+    # a method name do not parse.
+    OWNERS = %w[
+      unique_ptr shared_ptr weak_ptr auto_ptr
+      std::unique_ptr std::shared_ptr std::weak_ptr std::auto_ptr
+    ].freeze
+
     # Written as a constant so the `#{` cannot be read as interpolation here.
     INTERP_OPEN = ["#", "{"].join.freeze
 
@@ -68,6 +89,7 @@ module GoldenHarness
         when "concatenated_string" then concatenated(node)
         when "char_literal" then Str(char_value(node))
         when "number_literal" then number(node)
+        when "user_defined_literal" then user_literal(node)
         when "true" then True_()
         when "false" then False_()
         when "null", "nullptr" then Nil_()
@@ -137,6 +159,15 @@ module GoldenHarness
 
           return Ivar(snake(text.sub(/\A_/, "")))
         end
+        # A LOCAL of this method, whatever its case, before the enum test.
+        # `enum_value?` falls back to GUESSING from the spelling for a name no
+        # header in the translation unit declares, and PascalCase is its yes:
+        # `const int BufferSize = 16 * 1024` in `fileEquals` was claimed by
+        # that guess, so the declaration stayed a local while all three USES
+        # became `:buffer_size`. The oracle enumerated this function's locals,
+        # so it has a positive answer here -- and in C++ the declaration
+        # shadows an enum constant of the same name regardless.
+        return Lvar(local_name(text)) if @facts.local?(@method_name, snake(text))
         return Sym(snake(text)) if @facts.enum_value?(text)
         return Const(text) if text.match?(/\A[A-Z]/)
 
@@ -194,7 +225,16 @@ module GoldenHarness
         # its members are ivars, and the right one is the argument.
         if argument.kind == "identifier" && @operator_lhs
           text = @cst.text(argument)
-          return Ivar(snake(@cst.text(field).sub(/\A_/, ""))) if text == @operator_lhs
+          if text == @operator_lhs
+            # An ivar only for a MEMBER. `operator==` compares `lhs._errorCount`
+            # and the golden has `@error_count`; `operator<<` reads
+            # `record.path()` through an accessor, which is a call on self.
+            # The `this->` branch below has always drawn the line here.
+            return Ivar(snake(@cst.text(field).sub(/\A_/, ""))) if
+              @cst.text(field).start_with?("_")
+
+            return Call(nil, member(field))
+          end
           return Call(Lvar(:other), member(field)) if text == @operator_rhs
         end
         # `this->_db` is this object's own member, which is the ivar; reaching
@@ -219,8 +259,24 @@ module GoldenHarness
           placed = qt_arg(fn, node)
           return placed if placed
 
-          return send_with_block(expr(@cst.field(fn, :argument)),
-                                 member(@cst.field(fn, :field)), node, args)
+          # A call on a rewritten operator's operands. The left one became the
+          # receiver, so it drops away -- `record.hasError()` is `has_error` --
+          # and the right one is the `other` argument.
+          #
+          # `field_access` does this for a plain field; these are CALLS, which
+          # is how `operator==` reads a record with accessors rather than
+          # public members: `lhs.path() == rhs.path()` was coming out as
+          # `lhs.path == rhs.path`, neither of which is defined.
+          argument = @cst.field(fn, :argument)
+          field = @cst.field(fn, :field)
+          if @operator_lhs && argument.kind == "identifier"
+            text = @cst.text(argument)
+            return send_with_block(nil, member(field), node, args) if text == @operator_lhs
+            return send_with_block(Lvar(:other), member(field), node, args) if
+              text == @operator_rhs
+          end
+
+          return send_with_block(expr(argument), member(field), node, args)
         end
 
         # An IMMEDIATELY-INVOKED lambda: `Q_ASSERT([&]{ ... }())`,
@@ -311,6 +367,12 @@ module GoldenHarness
       # through a qualified name's `name` field.
       def template_function(fn, node, args)
         name = @cst.text(@cst.dig(fn, "identifier", field: :name))
+        # The smart pointer is transparent: what it owns is the value, and an
+        # empty one owns nothing.
+        if OWNERS.include?(name) && args.size <= 1
+          return args.empty? ? Nil_() : args.first
+        end
+
         if MAKERS.include?(name)
           type = @cst.dig(fn, "type_identifier", field: :arguments)
           return send_with_block(ConstPath(@cst.text(type)), :new, node, args) if type
@@ -327,9 +389,16 @@ module GoldenHarness
         argument = arguments && @cst.named(arguments).first
         return Call(nil, snake(name), *args) if argument.nil?
 
+        # A NESTED template argument cannot take the `< T > (...)` spelling:
+        # `qRegisterMetaType<QVector<LocalInfo>>("...")` would need
+        # `Const("QVector<LocalInfo>")`, which is not a constant name. The call
+        # keeps its own argument and loses the type, which Ruby has no use for.
+        text = @cst.text(argument)
+        return Call(nil, snake(name), *args) if text.include?("<")
+
         # The argument's WHOLE text: `SyncFileItem::Status` is a qualified
         # name, and digging for a `type_identifier` inside it found `Status`.
-        Binary(Binary(Lvar(snake(name)), :<, Const(@cst.text(argument))), :>, Paren(args.first))
+        Binary(Binary(Lvar(snake(name)), :<, Const(text)), :>, Paren(args.first))
       end
 
       STRING_NODES = %w[string_literal raw_string_literal concatenated_string].freeze
@@ -556,6 +625,15 @@ module GoldenHarness
         when "!" then negate(argument, operand)
         when "-" then Call(operand, :-@)
         when "+" then operand
+        # The bitwise complement, which Ruby has. `else operand` silently
+        # DROPPED it, and localdiscoverytracker's guard
+        # `instruction() & ~(NONE | UPDATE_METADATA)` then tested the opposite
+        # set of bits.
+        #
+        # Parenthesised because unparser writes a nested operator send with a
+        # dot -- `i & (a | b).~` -- and the parens get it back to `i & (~(a |
+        # b))`, which is the C++ spelling.
+        when "~" then Paren(Call(operand, :~))
         else operand
         end
       end
@@ -571,10 +649,35 @@ module GoldenHarness
         Not(operand)
       end
 
+      # Whether this name is an INTEGER, asked only of the scope that owns it.
+      #
+      # Never from the bare name. `Facts#shape` falls back to it, and the bare
+      # key is whatever the oracle recorded last for that spelling anywhere in
+      # the translation unit -- which is wrong in both directions:
+      #
+      #   * `uint _blocked` in JobQueue read as the `bool _blocked` of
+      #     JobQueueGuard, so `if (_blocked)` was left as a bare truthiness
+      #     test that Ruby also takes for 0;
+      #   * `std::error_code ec` has no shape of its own, so it inherited the
+      #     "int" of some unrelated `ec` and `if (ec)` -- which asks
+      #     error_code's `operator bool` -- would have become `ec != 0`.
+      #
+      # A member is scoped by its class and a local by its method. With no
+      # answer there, the type is unknown and nothing is converted.
       def integer?(node)
         return false unless node.kind == "identifier"
 
-        @facts.shape(local_name(@cst.text(node)), @method_name) == "int"
+        text = @cst.text(node)
+        member = text.start_with?("_")
+        name = member ? text : local_name(text)
+        scope = member ? @class_name : @method_name
+        scoped = scope && @facts.shape_in(name, scope)
+        # The scope that owns the name has the say. Only a GLOBAL has no
+        # owning scope -- `extern int autotestFailCounter` -- and for those the
+        # bare name is the only key there is.
+        return scoped == "int" unless scoped.nil?
+
+        @facts.shape(name) == "int"
       end
 
       def assignment(node)
@@ -765,12 +868,31 @@ module GoldenHarness
 
       # `Foo{a, b}` -- C++ brace initialisation.
       def brace_init(node)
-        type = ConstPath(@cst.text(@cst.field(node, :type)))
+        text = @cst.text(@cst.field(node, :type))
         values = @cst.named(@cst.field(node, :value)).filter_map { expr(_1) }
-        Call(type, :new, *values)
+        # `std::optional<quint64>{}` is an optional holding NOTHING, which is
+        # `nil`. Built as a construction it came out `std::optional<quint64>.new`,
+        # and the template arguments in a method name do not parse.
+        return Nil_() if values.empty? && text.match?(/\Astd::optional\b/)
+        # `std::unique_ptr<Platform>{ new UnixPlatform(t) }` -- the braced
+        # spelling of the same ownership wrapper `template_function` sees with
+        # parens, and just as transparent.
+        bare = text.sub(/<.*\z/, "")
+        if OWNERS.include?(bare)
+          # An EMPTY owner owns nothing, which is `nil`; one holding a value is
+          # that value.
+          return values.empty? ? Nil_() : values.first
+        end
+        return n(:array, *values) if CONTAINERS[:array].include?(bare)
+        return Call(Const(:Set), :new, n(:array, *values)) if CONTAINERS[:set].include?(bare)
+
+        Call(ConstPath(text), :new, *values)
       end
 
       def initializer(node)
+        designated = @cst.named(node).select { _1.kind == "initializer_pair" }
+        return designated_initializer(designated) if designated.any?
+
         values = @cst.named(node).filter_map { expr(_1) }
         # As a call ARGUMENT a braced list is a container being built, so it
         # stays one even with a single element: `entryList({ fn })` passes a
@@ -796,6 +918,33 @@ module GoldenHarness
         If(expr(@cst.field(node, :condition)),
            expr(@cst.field(node, :consequence)),
            expr(@cst.field(node, :alternative)))
+      end
+
+      # A C++20 designated initialiser: `return {.size = x, .mtime = y};`.
+      #
+      # The names are the struct's own fields, and a struct becomes
+      # `Struct.new(..., keyword_init: true)` here, so the Ruby is a keyword
+      # construction of the type the function returns. Where that type is not a
+      # record the pairs stand on their own as a hash.
+      #
+      # Read as an array before this, which put the raw C++ `.size = x` in the
+      # output and left filesystem.cpp unparsable -- 20 offences, all of them
+      # the one `Lint/Syntax` cascading.
+      def designated_initializer(pairs)
+        fields = pairs.filter_map do |pair|
+          name = @cst.dig(pair, "field_identifier")
+          value = @cst.named(pair).last
+          next if name.nil? || value.nil?
+
+          n(:pair, Sym(snake(@cst.text(name))), expr(value))
+        end
+        return Nil_() if fields.empty?
+
+        type = @function && @cst.field(@function, :type)
+        return n(:hash, *fields) unless type&.kind == "type_identifier" &&
+                                        @facts.record?(@cst.text(type))
+
+        Call(ConstPath(@cst.text(type)), :new, n(:kwargs, *fields))
       end
 
       # `"a" "b"` -- C++ concatenates adjacent literals, and the author's line
@@ -886,10 +1035,25 @@ module GoldenHarness
       # A bare `_db` is not a translation unit, so it is given a statement to
       # live in and the expression is taken back out -- the same trick
       # ast-grep's pattern `context`/`selector` pair uses.
+      # The text of an expression, read back as one.
+      #
+      # The context matters, because C++ is ambiguous without it. As a bare
+      # `<text>;` at file scope, `a / b` and `x - 1` are not expressions at all
+      # -- tree-sitter reads them as declarations and hands back nothing --
+      # and `quota_per_device / 1024.0` came out as a `parameter_pack_expansion`.
+      # The whole thing then fell through to `Lvar(text)`, an `lvar` named
+      # `"quota_per_device / 1024.0"`, which unparser refuses inside a string.
+      #
+      # Inside a function body AND parenthesised, every shape parses with no
+      # ERROR node: the parens are what settle `a * b`, which is a pointer
+      # declaration in statement position and a multiplication here.
+      WRAP = ["void __f__() { (", "); }"].freeze
+
       def fragment(text)
-        sub = Cst.new("#{text};")
+        sub = Cst.new("#{WRAP.first}#{text}#{WRAP.last}")
         statement = sub.descendants(sub.root).find { _1.kind == "expression_statement" }
-        inner = statement && sub.named(statement).first
+        paren = statement && sub.named(statement).first
+        inner = paren&.kind == "parenthesized_expression" ? sub.named(paren).first : paren
         return Lvar(text) if inner.nil?
 
         with_cst(sub) { expr(inner) }
@@ -922,8 +1086,39 @@ module GoldenHarness
         unescape(@cst.text(node).sub(/\A'/, "").sub(/'\z/, ""))
       end
 
+      # `FileSystem::SizeLiterals`, defined in filesystembase.h: `_B` is the
+      # number itself, the binary suffixes step by 1024 and the decimal ones by
+      # 1000. Longest first, so `_KiB` is not read as `_B`.
+      SIZE_LITERALS = {
+        "_KiB" => 1024, "_MiB" => 1024**2, "_GiB" => 1024**3,
+        "_kB" => 1000, "_MB" => 1000**2, "_GB" => 1000**3, "_B" => 1
+      }.freeze
+
+      # A C++ user-defined literal: `1_GiB`, `4_KiB`.
+      #
+      # Ruby has no such thing, and `1_GiB` is not even a number there -- a
+      # trailing `_` is a syntax error -- so the multiplication the operator
+      # would do is done here. utility.cpp and hydrationdevice.cpp were
+      # unparsable on this alone.
+      def user_literal(node)
+        text = @cst.text(node)
+        suffix = SIZE_LITERALS.keys.find { text.end_with?(_1) }
+        return Lvar(text) if suffix.nil?
+
+        digits = text.delete_suffix(suffix).delete("'")
+        Int(Integer(digits, 0) * SIZE_LITERALS.fetch(suffix))
+      rescue ArgumentError
+        Lvar(text)
+      end
+
       def number(node)
-        text = @cst.text(node).delete("'").sub(/[uUlLfF]+\z/, "")
+        text = @cst.text(node).delete("'")
+        # In a HEX literal `f` and `F` are digits, not the float suffix:
+        # stripping them turned `0xFFFFFFFF` into `0x`, which does not parse as
+        # a number, so it fell through to the `Lvar` below and became a
+        # variable NAMED `0xFFFFFFFF`. Three files failed to emit at all on it,
+        # because an lvar with that name cannot round trip inside a string.
+        text = text.sub(text.match?(/\A0[xX]/) ? /[uUlL]+\z/ : /[uUlLfF]+\z/, "")
         return Float_(text) if text.include?(".")
 
         Int(Integer(text, 0))
