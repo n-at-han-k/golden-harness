@@ -1,43 +1,37 @@
 # yaml-language-server: $schema=https://taskfile.dev/schema.json
-#
-# Golden-harness pipeline.
-#
-# Layout:
-#   02-input/<rel>/<name>.<ext>      source case
-#   01-golden/<rel>/<name>.<ext>.rb  hand-written golden (gated)
-#   03-output/<rel>/<name>.<ext>.rb  generated output artifact
-#
-# Commands:
-#   task                                  verify all gated goldens
-#   task verify SRC=02-input/.../foo.cpp  verify one case
-#   task bootstrap SRC=02-input/.../foo.cpp  generate golden draft from input
-#   task add SRC=../src/libsync/foo.cpp  copy file into 02-input
 
 version: '3'
 
+vars:
+  SRC: 02-input/libsync/common/syncjournaldb.cpp
+  RUBOCOP: bundle exec rubocop
+
 tasks:
   default:
-    desc: Verify all gated goldens (no regressions)
+    desc: Run the pipeline on SRC and diff the result against its golden
+    vars:
+      REL: '{{trimPrefix "02-input/" .SRC}}'
+      STAGE: '{{trimSuffix ".full" (trimPrefix "02-input/" .SRC)}}'
     cmds:
-      - python3 scripts/05_validate.py
-
-  verify:
-    desc: Verify one case against its golden
-    requires:
-      vars: [SRC]
-    cmds:
-      - python3 scripts/05_validate.py --case "{{.SRC}}"
-
-  bootstrap:
-    desc: Generate golden draft from input into 01-golden
-    requires:
-      vars: [SRC]
-    cmds:
-      - python3 scripts/05_validate.py --case "{{.SRC}}" --bootstrap
-
-  add:
-    desc: Copy a source file into 02-input
-    requires:
-      vars: [SRC]
-    cmds:
-      - python3 scripts/05_validate.py --add "{{.SRC}}"
+      - rm -rf tmp && mkdir -p "tmp/work/$(dirname {{.STAGE}})" && cp {{.SRC}} tmp/work/{{.STAGE}}
+      - python3 scripts/01_build_transform.py
+      - python3 scripts/02_prepare.py tmp/work tmp/work
+      - ast-grep scan -c sgconfig.yml -r scripts/rules/01_alias.yml --update-all tmp/work
+      - ast-grep scan -c sgconfig.yml -r scripts/rules/02_typos.yml --update-all tmp/work
+      - |
+        for i in $(seq 20); do
+          # 2>&1 matters: ast-grep reports "Applied N changes" on STDERR, so a
+          # bare $(...) captures nothing and the loop breaks after one round.
+          out=$(ast-grep scan -c sgconfig.yml -r scripts/rules/03_simplify.yml --update-all tmp/work 2>&1)
+          echo "$out"
+          case "$out" in
+            *Applied*) ;;
+            *) echo "simplify: fixpoint after $i round(s)"; break ;;
+          esac
+        done
+      - ast-grep scan -c sgconfig.yml -r scripts/rules/04_interp.yml --update-all tmp/work
+      - ast-grep scan -c sgconfig.yml -r scripts/07_transform.yml --update-all tmp/work
+      - python3 scripts/03_rubyify.py tmp/work tmp/work
+      - '{{.RUBOCOP}} -A -c .rubocop.yml tmp/work || true'
+      - mkdir -p "03-output/$(dirname {{.REL}})" && cp tmp/work/{{.STAGE}}.rb 03-output/{{.REL}}.rb
+      - diff -u 01-golden/{{.REL}}.rb 03-output/{{.REL}}.rb

@@ -102,7 +102,31 @@
             cd "$work"
 
             export XDG_CACHE_HOME="$work/.cache"
-            python3 scripts/05_validate.py --oneshot "$input" --output "$output"
+
+            # The pipeline has exactly one definition -- the `default` task in
+            # Taskfile.yaml -- and this hands it a SRC and takes the file it
+            # leaves in 03-output.
+            #
+            # RUBOCOP replaces `bundle exec rubocop`: the store copy has no
+            # Gemfile for bundler to resolve against, but the bundlerEnv
+            # wrapper is already on PATH.
+            #
+            # The task ends by diffing against the golden. An arbitrary input
+            # has no golden, so that last step is expected to fail and its exit
+            # status is not this CLI's -- the Ruby is produced by the stage
+            # before it. Whether the file appeared is the real test.
+            rel=$(basename "$input")
+            mkdir -p "$work/02-input"
+            cp "$input" "$work/02-input/$rel"
+            go-task "SRC=02-input/$rel" RUBOCOP=rubocop || true
+
+            result="03-output/$rel.rb"
+            if [ ! -f "$result" ]; then
+              echo "golden-harness: the pipeline produced no Ruby for $1" >&2
+              exit 1
+            fi
+            cp "$result" "$output"
+            echo "golden-harness: wrote $output"
           '';
         };
       in

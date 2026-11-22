@@ -1719,7 +1719,7 @@ module OCC
 
       Log.info("sync.database") {
         "Setting blacklist entry for #{item.file} #{item.retry_count} #{item.error_string} #{item.last_try_time} #{item.ignore_duration}" \
-          " #{item.last_try_modtime} #{item.last_try_etag} #{item.rename_target} #{item.error_category}"
+          "#{item.last_try_modtime} #{item.last_try_etag} #{item.rename_target} #{item.error_category}"
       }
 
       if !check_connect
