@@ -81,6 +81,18 @@ Layout/ClassStructure:
     private_delegate:
       - delegate
 
+# OFF for this harness.
+#
+# The cop bans `return` on the grounds that a method's last expression is its
+# return value and guards are structural. That is a judgement about code
+# someone wrote; this is a transliteration, where a C++ `return x;` is a fact
+# about the source and an early return in the middle of a method has no
+# last-expression equivalent. discovery.cpp returns early 40-odd times.
+#
+# Autocorrecting them away would change which statements run.
+Nathank/NoReturn:
+  Enabled: false
+
 # Bans the ternary. The pipeline must therefore not EMIT one: this cop only
 # reports, it does not autocorrect, so the expansion into if/else lives in
 # scripts/rules/simplify.yml (s-ternary-decl, s-ternary-assign, s-ternary-arg).

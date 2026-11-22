@@ -819,7 +819,12 @@ id: s-ternary-arg
 language: cpp
 severity: hint
 rule:
-  kind: expression_statement
+  # A declaration counts as well as a plain statement: `excluded = f(path,
+  # cond ? A : B);` has the ternary in an argument, not as the assigned value,
+  # so s-ternary-decl does not reach it.
+  any:
+    - kind: expression_statement
+    - kind: declaration
   pattern: $STMT
   has:
     stopBy: end

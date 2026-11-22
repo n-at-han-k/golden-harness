@@ -1,0 +1,153 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    ast (2.4.3)
+    ast-crispr (7.1.17)
+      ast-merge (= 7.1.17)
+      service_actor (~> 3.9)
+      version_gem (~> 1.1, >= 1.1.16)
+    ast-crispr-ruby-prism (7.1.17)
+      ast-crispr (= 7.1.17)
+      prism-merge (= 7.1.17)
+      tree_haver (= 7.1.17)
+      version_gem (~> 1.1, >= 1.1.16)
+    ast-merge (7.1.17)
+      benchmark
+      token-resolver (~> 2.0, >= 2.0.4)
+      tree_haver (= 7.1.17)
+      version_gem (~> 1.1, >= 1.1.16)
+    benchmark (0.5.0)
+    citrus (3.0.2)
+    decode (0.30.0)
+      prism
+      rbs (~> 4.0)
+    ffi (1.17.4)
+    ffi (1.17.4-x86_64-linux-gnu)
+    ffi-clang (0.16.0)
+      ffi
+    json (3.1.0)
+    language_server-protocol (3.17.0.6)
+    lint_roller (1.1.0)
+    logger (1.7.0)
+    parallel (2.3.0)
+    parser (3.3.14.0)
+      ast (~> 2.4.1)
+      racc
+    parslet (2.0.0)
+    prism (1.9.0)
+    prism-merge (7.1.17)
+      ast-merge (= 7.1.17)
+      prism (~> 1.6)
+      ruby-merge (= 7.1.17)
+      tree_haver (= 7.1.17)
+      version_gem (~> 1.1, >= 1.1.16)
+    racc (1.8.1)
+    rainbow (3.1.1)
+    rbs (4.2.0)
+      logger
+      prism (>= 1.6.0)
+      tsort
+    regexp_parser (2.13.4)
+    rubocop (1.92.3)
+      json (>= 2.3)
+      language_server-protocol (~> 3.17.0.2)
+      lint_roller (~> 1.1.0)
+      parallel (>= 1.10)
+      parser (>= 3.3.0.2)
+      rainbow (>= 2.2.2, < 4.0)
+      regexp_parser (>= 2.11.3, < 3.0)
+      rubocop-ast (>= 1.49.0, < 2.0)
+      ruby-progressbar (~> 1.7)
+      unicode-display_width (>= 2.4.0, < 4.0)
+    rubocop-ast (1.53.0)
+      ast (~> 2.4)
+      parser (>= 3.3.7.2)
+      prism (>= 1.7)
+      racc
+    rubocop-disable_syntax (0.2.0)
+      lint_roller
+      rubocop (>= 1.72.0)
+    rubocop-nathank (2.1.0)
+      decode
+      lint_roller
+      prism
+      rubocop (>= 1.72)
+    ruby-merge (7.1.17)
+      ast-merge (= 7.1.17)
+      tree_haver (= 7.1.17)
+      version_gem (~> 1.1, >= 1.1.16)
+    ruby-progressbar (1.13.0)
+    service_actor (3.9.4)
+      zeitwerk (>= 1.0)
+    sorbet-runtime (0.6.13715)
+    token-resolver (2.0.16)
+      parslet (~> 2.0)
+      version_gem (~> 1.1, >= 1.1.17)
+    tree_haver (7.1.17)
+      citrus (~> 3.0)
+      parslet (~> 2.0)
+      tree_sitter_language_pack (>= 1.17.0, < 2.0)
+      version_gem (~> 1.1, >= 1.1.16)
+    tree_sitter_language_pack (1.25.0-x86_64-linux)
+      sorbet-runtime (~> 0.6)
+    tsort (0.2.0)
+    unicode-display_width (3.3.0)
+      unicode-emoji (~> 4.3)
+    unicode-emoji (4.3.0)
+    version_gem (1.1.17)
+    zeitwerk (2.8.3)
+
+PLATFORMS
+  x86_64-linux
+
+DEPENDENCIES
+  ast-crispr
+  ast-crispr-ruby-prism
+  ffi-clang
+  rubocop
+  rubocop-disable_syntax
+  rubocop-nathank
+
+CHECKSUMS
+  ast (2.4.3) sha256=954615157c1d6a382bc27d690d973195e79db7f55e9765ac7c481c60bdb4d383
+  ast-crispr (7.1.17) sha256=35219c373a02aa6348b07fd080f84c3c80bfd852750e55f6d980aa6c5ddf92c8
+  ast-crispr-ruby-prism (7.1.17) sha256=03e6300a9a9c309336697b6610a6b42bf4859634b7e9e2ebb52e3bfc46c80ed6
+  ast-merge (7.1.17) sha256=19f053511f7fe589d5ff2c5c2ba9a7dedb7e3d4efca7928ff9a3ddcb46524426
+  benchmark (0.5.0) sha256=465df122341aedcb81a2a24b4d3bd19b6c67c1530713fd533f3ff034e419236c
+  citrus (3.0.2) sha256=4ec2412fc389ad186735f4baee1460f7900a8e130ffe3f216b30d4f9c684f650
+  decode (0.30.0) sha256=f567364ad206f1b60987faeec0551dd1481aea7dfb192d7fab77020154b1a845
+  ffi (1.17.4) sha256=bcd1642e06f0d16fc9e09ac6d49c3a7298b9789bcb58127302f934e437d60acf
+  ffi (1.17.4-x86_64-linux-gnu) sha256=9d3db14c2eae074b382fa9c083fe95aec6e0a1451da249eab096c34002bc752d
+  ffi-clang (0.16.0) sha256=5c002fc3878200078ea33af5f1b145a1582a14798029caed4f3a504085cd9208
+  json (3.1.0) sha256=3ce7ccf8fde58960177a3a756c31f292a4c1e1dedee884547096a5b0604e3bd8
+  language_server-protocol (3.17.0.6) sha256=5ef2c0c138f8267e1bc631d3328347d354f96724b0af22f2c79516120443b7f0
+  lint_roller (1.1.0) sha256=2c0c845b632a7d172cb849cc90c1bce937a28c5c8ccccb50dfd46a485003cc87
+  logger (1.7.0) sha256=196edec7cc44b66cfb40f9755ce11b392f21f7967696af15d274dde7edff0203
+  parallel (2.3.0) sha256=f75a3e904101ce6a1ccb6b8dc800cbafd42166d83330192438dcf29395167a6f
+  parser (3.3.14.0) sha256=62f8f76af7b919425ee2d811880e9dcb8011ab40bfd59970dfb583141697e58f
+  parslet (2.0.0) sha256=d45130695d39b43d7e6a91f4d2ec66b388a8d822bae38de9b4de9a5fbde1f606
+  prism (1.9.0) sha256=7b530c6a9f92c24300014919c9dcbc055bf4cdf51ec30aed099b06cd6674ef85
+  prism-merge (7.1.17) sha256=facd87b6df3761eab5133f3680360ae02b54d0c1b894af0e8709a51658a0d615
+  racc (1.8.1) sha256=4a7f6929691dbec8b5209a0b373bc2614882b55fc5d2e447a21aaa691303d62f
+  rainbow (3.1.1) sha256=039491aa3a89f42efa1d6dec2fc4e62ede96eb6acd95e52f1ad581182b79bc6a
+  rbs (4.2.0) sha256=51f7b886dcc05bc09e10b901daa6a81829f6adc03101d6ca9ea4aac6103e0674
+  regexp_parser (2.13.4) sha256=1d0547814f57e6f00946957bd0ca201bc42f42cfb08eee89df60998aedcd8a3b
+  rubocop (1.92.3) sha256=fd77feac46e8e91c3a534f868a1702c59f5bf8173515fd00a3c6ce1198672ff6
+  rubocop-ast (1.53.0) sha256=027984d28485d6502ae4c72f9341080f54f538599f5dbb54f81875a4ddcad574
+  rubocop-disable_syntax (0.2.0) sha256=1e61645773b3fc2f74e995ec65f605f7db59437c274fdfd4f385f60bf86af73e
+  rubocop-nathank (2.1.0) sha256=8d7391ed812b078d9689128fab396dfae056de4a0945cda89b09a88d60a851bf
+  ruby-merge (7.1.17) sha256=79acf2cd7b1f7c0eb42e5ec47f95c71f5d22ca8d170a4108d9ff1a42fc6f7e2a
+  ruby-progressbar (1.13.0) sha256=80fc9c47a9b640d6834e0dc7b3c94c9df37f08cb072b7761e4a71e22cff29b33
+  service_actor (3.9.4) sha256=e63b523630b9a7e62959b2a90113b08d2565b5de9c148557b281ef847c9539ce
+  sorbet-runtime (0.6.13715) sha256=722e303edbab2990ab53e5b2b5c2ab9eaa7ad89474ffd5c90ba6442c6214bc25
+  token-resolver (2.0.16) sha256=418b5881cd23beab719179a8f7ceeca7816e918ff9b1d462dd32eddc38c4ed8e
+  tree_haver (7.1.17) sha256=9d512198a26229a0830d0b6305d44b713f11f04e6b5ad9edb62aa553079fae3a
+  tree_sitter_language_pack (1.25.0-x86_64-linux) sha256=43c46682ecec1093dfbfeefea18859bf56a13ad011b3915d0d70cdfb3ac439ea
+  tsort (0.2.0) sha256=9650a793f6859a43b6641671278f79cfead60ac714148aabe4e3f0060480089f
+  unicode-display_width (3.3.0) sha256=4b7aa66a4b11db50f6f7e98411215cd0dd10eaecb665d36eec5bcacb3fa0b613
+  unicode-emoji (4.3.0) sha256=11c02fa73290378c066bb0562cd4c87d8e1b706fbbe0059ca12746a4244de8ce
+  version_gem (1.1.17) sha256=70420b9675fbb77a7e7e7eb8ed6580dd4dd25be53b1454c1a79cc18f3c5a8dfd
+  zeitwerk (2.8.3) sha256=2c85125a8467ce069e20123d1e709a08955c9d29c118c25b46b7b7fafdbb92e5
+
+BUNDLED WITH
+   2.7.2
