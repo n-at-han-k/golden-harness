@@ -572,7 +572,13 @@ module OCC
           done = true
         else
           @pending_async_jobs += 1
-          job = RequestEtagJob.new(@discovery_data.account, @discovery_data.base_url, @discovery_data.remote_folder + original_path, this)
+
+          job = RequestEtagJob.new(
+            @discovery_data.account,
+            @discovery_data.base_url,
+            @discovery_data.remote_folder + original_path,
+            this
+          )
 
           connect(job, RequestEtagJob.finished_signal, this) do
             @pending_async_jobs -= 1
@@ -590,13 +596,9 @@ module OCC
               post_process_rename.call(path)
 
               if item.instruction == CSYNC_INSTRUCTION_RENAME
-                process_file_finalize(
-                  item, path, item.is_directory, :normal_query, @query_server
-                )
+                process_file_finalize(item, path, item.is_directory, :normal_query, @query_server)
               else
-                process_file_finalize(
-                  item, path, item.is_directory, :parent_dont_exist, @query_server
-                )
+                process_file_finalize(item, path, item.is_directory, :parent_dont_exist, @query_server)
               end
 
               return
@@ -758,9 +760,7 @@ module OCC
               db_entry.modtime == local_entry.modtime &&
               db_entry.size == local_entry.size
             ) ||
-            (
-              local_entry.is_directory
-            )
+            local_entry.is_directory
           )
         )
           if no_server_entry
@@ -1063,13 +1063,7 @@ module OCC
                 :parent_not_changed
               )
             else
-              process_file_finalize(
-                item,
-                process_rename.call(path),
-                item.is_directory,
-                :normal_query,
-                :normal_query
-              )
+              process_file_finalize(item, process_rename.call(path), item.is_directory, :normal_query, :normal_query)
             end
           end
 
@@ -1283,15 +1277,13 @@ module OCC
 
       case item.instruction
       when CSYNC_INSTRUCTION_TYPE_CHANGE, CSYNC_INSTRUCTION_NEW
-        perms = (
-          if !@root_permissions.is_null
-            @root_permissions
-          elsif @dir_item
-            @dir_item.remote_perm
-          else
-            @root_permissions
-          end
-        )
+        if !@root_permissions.is_null
+          perms = @root_permissions
+        elsif @dir_item
+          perms = @dir_item.remote_perm
+        else
+          perms = @root_permissions
+        end
 
         if perms.is_null
           return true
@@ -1593,7 +1585,13 @@ module OCC
 
       @discovery_data.currently_active_jobs += 1
       @pending_async_jobs += 1
-      connect(local_job, DiscoverySingleLocalDirectoryJob.item_discovered, @discovery_data, DiscoveryPhase.item_discovered)
+
+      connect(
+        local_job,
+        DiscoverySingleLocalDirectoryJob.item_discovered,
+        @discovery_data,
+        DiscoveryPhase.item_discovered
+      )
 
       connect(local_job, DiscoverySingleLocalDirectoryJob.child_ignored, this) do |b|
         @child_ignored = b
